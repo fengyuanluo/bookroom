@@ -1,0 +1,16 @@
+# Generates internal/api/api.gen.go from api/openapi.yaml (run via `go generate ./internal/api`).
+# `output` is relative to internal/api, where go:generate runs. Never edit the output by hand.
+package: api
+output: api.gen.go
+generate:
+  models: true
+  gin-server: true
+  strict-server: true
+  embedded-spec: true
+output-options:
+  skip-prune: true
+  # JSON numbers carry epoch milliseconds (Readest) and must not round through float32.
+  type-mapping:
+    number:
+      default:
+        type: float64

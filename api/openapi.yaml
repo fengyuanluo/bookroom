@@ -1,0 +1,2485 @@
+openapi: 3.0.3
+info:
+  title: BookRoom API
+  version: 0.1.0
+  description: |
+    BookRoom is a self-hosted library server for the Readest reader ecosystem.
+
+    One binary serves five protocol families, all described here:
+
+    | Family | Prefix | Auth | Consumers |
+    |---|---|---|---|
+    | Native API | `/api/v1` | Bearer JWT | agents, scripts, the Readest fork's BookRoom screens |
+    | Readest cloud contract | `/api/sync`, `/api/storage`, `/auth/v1` | Bearer JWT | Readest fork, `readest.koplugin` |
+    | KOSync | `/kosync` | `x-auth-user` + `x-auth-key` (device key) | KOReader, CrossPoint and other KOSync clients |
+    | OPDS 1.2 | `/opds` | HTTP Basic (password or device key) | KOReader, Readest, any OPDS reader |
+    | Web proxies | `/api/opds/proxy`, `/api/kosync`, ... | Bearer JWT or `access_token` query | Readest web build (CORS) |
+
+    Conventions of the native API:
+
+    - Errors are RFC 9457 `application/problem+json` with a stable `type` URI.
+    - Lists are cursor-paged: pass the returned `nextCursor` back as `cursor`.
+    - A **book** is one file; its identity is the 32-hex partial MD5 (`hash`) shared with Readest and KOReader.
+    - A **shelf** is a nested folder path such as `小说/仙侠`; a book belongs to at most one shelf per user.
+
+    The Readest-compatible endpoints keep Readest's own wire format (snake_case rows, `{"error": "..."}` bodies)
+    because unmodified Readest data-layer code and `readest.koplugin` call them.
+  license:
+    name: AGPL-3.0-or-later
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: system
+  - name: auth
+    description: Native login, token refresh and the current user.
+  - name: users
+    description: Account administration (admin only).
+  - name: devices
+    description: Per-device sync keys used as the KOSync / OPDS password.
+  - name: books
+    description: The shared library and each user's state of a book.
+  - name: shelves
+    description: Nested single-membership folders (Readest groups) and tags.
+  - name: metadata
+    description: Metadata scraping from external sources.
+  - name: stats
+    description: Reading time aggregated from raw page events.
+  - name: readest-sync
+    description: Readest cloud sync contract (`/api/sync`), unchanged wire format.
+  - name: readest-storage
+    description: Readest cloud storage contract (`/api/storage`) backed by local disk.
+  - name: gotrue
+    description: Minimal Supabase GoTrue subset so `readest.koplugin` can log in.
+  - name: kosync
+    description: KOReader sync protocol (progress only).
+  - name: opds
+    description: OPDS 1.2 Atom catalog.
+  - name: proxy
+    description: SSRF-guarded pass-through proxies for the Readest web build.
+
+paths:
+  /healthz:
+    get:
+      tags: [system]
+      operationId: getHealth
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Server is up and the database answers.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+
+  # ───────────────────────── native auth ─────────────────────────
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Exchange username and password for a token pair
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200':
+          description: Logged in.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenPair'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refreshToken
+      summary: Rotate a refresh token
+      description: The presented refresh token is consumed; a new pair is returned. Reusing a consumed token fails.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RefreshRequest'}
+      responses:
+        '200':
+          description: New token pair.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenPair'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Revoke a refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RefreshRequest'}
+      responses:
+        '204': {description: Revoked (also when the token was already unknown).}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /api/v1/me:
+    get:
+      tags: [auth]
+      operationId: getMe
+      summary: The authenticated user
+      responses:
+        '200':
+          description: Current user.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/me/password:
+    put:
+      tags: [auth]
+      operationId: changePassword
+      summary: Change the current user's password
+      description: Revokes every refresh token of the user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChangePasswordRequest'}
+      responses:
+        '204': {description: Password changed.}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  # ───────────────────────── users ─────────────────────────
+  /api/v1/users:
+    get:
+      tags: [users]
+      operationId: listUsers
+      summary: List accounts
+      security:
+        - bearerAuth: [admin]
+      responses:
+        '200':
+          description: All accounts.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [users]
+      operationId: createUser
+      summary: Create an account
+      description: The new account immediately sees the whole library (every library book is projected into its Readest sync rows).
+      security:
+        - bearerAuth: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateUserRequest'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/v1/users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    delete:
+      tags: [users]
+      operationId: deleteUser
+      summary: Delete an account and all of its sync data
+      description: Library books stay. An admin cannot delete itself.
+      security:
+        - bearerAuth: [admin]
+      responses:
+        '204': {description: Deleted.}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/users/{userId}/password:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    put:
+      tags: [users]
+      operationId: resetUserPassword
+      summary: Set another account's password
+      security:
+        - bearerAuth: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResetPasswordRequest'}
+      responses:
+        '204': {description: Password set; the user's refresh tokens are revoked.}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  # ───────────────────────── devices ─────────────────────────
+  /api/v1/devices:
+    get:
+      tags: [devices]
+      operationId: listDevices
+      summary: List the current user's device keys
+      responses:
+        '200':
+          description: Devices (keys are never returned again).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeviceList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [devices]
+      operationId: createDevice
+      summary: Issue a device key
+      description: |
+        The returned `key` is shown once. Enter it as the password of a KOSync client (username: `kosyncUsername`,
+        server: `<base>/kosync`) or of an OPDS client (`<base>/opds`). The key alone identifies the user, so it can
+        be revoked per device without touching the account password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateDeviceRequest'}
+      responses:
+        '201':
+          description: Key issued.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeviceCreated'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/devices/{deviceId}:
+    parameters:
+      - name: deviceId
+        in: path
+        required: true
+        schema: {type: string}
+    delete:
+      tags: [devices]
+      operationId: deleteDevice
+      summary: Revoke a device key
+      responses:
+        '204': {description: Revoked.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  # ───────────────────────── books ─────────────────────────
+  /api/v1/books:
+    get:
+      tags: [books]
+      operationId: listBooks
+      summary: List and search the library
+      description: |
+        `q` matches title, authors and series with a substring match (works for one- and two-character Chinese
+        queries). Filters combine with AND. Books the current user deleted in Readest are hidden.
+      parameters:
+        - {name: q, in: query, schema: {type: string, maxLength: 200}, description: Substring of title, author or series.}
+        - {name: shelf, in: query, schema: {type: string}, description: 'Exact shelf path, e.g. `小说/仙侠`. Empty string selects books without a shelf.'}
+        - {name: recursive, in: query, schema: {type: boolean, default: false}, description: With `shelf`, also include books in sub-shelves.}
+        - {name: tag, in: query, schema: {type: string}}
+        - {name: format, in: query, schema: {$ref: '#/components/schemas/BookFormat'}}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/ReadingStatus'}}
+        - {name: workType, in: query, schema: {$ref: '#/components/schemas/WorkType'}}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [added, updated, title, author, lastRead], default: added}
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc], default: desc}
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One page of books.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BookPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [books]
+      operationId: uploadBook
+      summary: Ingest a book file
+      description: |
+        Streams the file to disk, computes its partial MD5 and reads embedded metadata. Uploading a file whose
+        hash is already in the library returns the existing book with `200`. Missing metadata is filled
+        asynchronously by the scraper.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The book file; its name (extension) decides the format.
+                shelf:
+                  type: string
+                  description: Optional shelf for the uploading user.
+      responses:
+        '200':
+          description: The file was already in the library.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Book'}
+        '201':
+          description: Ingested.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Book'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '413': {$ref: '#/components/responses/TooLarge'}
+        '415': {$ref: '#/components/responses/Unsupported'}
+  /api/v1/books/{hash}:
+    parameters:
+      - $ref: '#/components/parameters/BookHash'
+    get:
+      tags: [books]
+      operationId: getBook
+      summary: One book with the current user's state
+      responses:
+        '200':
+          description: The book.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Book'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      tags: [books]
+      operationId: updateBookMetadata
+      summary: Edit library metadata
+      description: |
+        Every field present in the body is written and **locked**: the scraper never overwrites it again
+        (see `PUT /api/v1/books/{hash}/metadata/locks`). The change propagates to every user's Readest library.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BookMetadataPatch'}
+      responses:
+        '200':
+          description: Updated book.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Book'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [books]
+      operationId: deleteBook
+      summary: Remove a book from the library
+      description: Deletes the file and cover and tombstones the book in every user's Readest library. Notes, progress and reading statistics are kept.
+      security:
+        - bearerAuth: [admin]
+      responses:
+        '204': {description: Deleted.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/books/{hash}/file:
+    parameters:
+      - $ref: '#/components/parameters/BookHash'
+    get:
+      tags: [books]
+      operationId: downloadBook
+      summary: Download the book file
+      description: Supports `Range` and conditional requests.
+      responses:
+        '200':
+          description: The file.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '206':
+          description: Partial content.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/books/{hash}/cover:
+    parameters:
+      - $ref: '#/components/parameters/BookHash'
+    get:
+      tags: [books]
+      operationId: getBookCover
+      summary: The cover image
+      responses:
+        '200':
+          description: Image bytes (JPEG, PNG, GIF or WebP as stored).
+          content:
+            image/*:
+              schema: {type: string, format: binary}
+        '304': {description: Not modified.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/books/{hash}/state:
+    parameters:
+      - $ref: '#/components/parameters/BookHash'
+    put:
+      tags: [books]
+      operationId: updateBookState
+      summary: Set the current user's shelf or reading status of a book
+      description: Written into the user's Readest book row with fresh field clocks, so every Readest device picks it up on the next sync.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BookStateUpdate'}
+      responses:
+        '200':
+          description: Book with the new state.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Book'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/books/{hash}/metadata/locks:
+    parameters:
+      - $ref: '#/components/parameters/BookHash'
+    put:
+      tags: [metadata]
+      operationId: setMetadataLocks
+      summary: Replace the set of locked metadata fields
+      description: Send an empty list to let the scraper fill every field again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MetadataLocks'}
+      responses:
+        '200':
+          description: Updated book.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Book'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/books/{hash}/metadata/search:
+    parameters:
+      - $ref: '#/components/parameters/BookHash'
+    post:
+      tags: [metadata]
+      operationId: searchBookMetadata
+      summary: Search metadata sources for candidates
+      description: |
+        Queries the enabled sources (or only `provider`) with the book's ISBN, title and author unless overridden in
+        the body. Candidates are sorted by `score` (0–100). Published-book and web-novel sources are never mixed
+        into one record; pick a candidate and call `.../metadata/apply`.
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MetadataQuery'}
+      responses:
+        '200':
+          description: Candidates and per-source failures.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CandidateList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/books/{hash}/metadata/apply:
+    parameters:
+      - $ref: '#/components/parameters/BookHash'
+    post:
+      tags: [metadata]
+      operationId: applyBookMetadata
+      summary: Apply a candidate to the book
+      description: Writes the chosen fields (default every non-empty field of the candidate) and locks them, because choosing a candidate is a user edit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApplyMetadataRequest'}
+      responses:
+        '200':
+          description: Updated book.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Book'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/Upstream'}
+  /api/v1/books/{hash}/metadata/refresh:
+    parameters:
+      - $ref: '#/components/parameters/BookHash'
+    post:
+      tags: [metadata]
+      operationId: refreshBookMetadata
+      summary: Queue automatic gap filling
+      description: The background scraper fills empty, unlocked fields only on an exact match (ISBN for published books; title and author on xiaoshuohub for web novels).
+      responses:
+        '202':
+          description: Queued.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ScrapeJob'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/metadata/providers:
+    get:
+      tags: [metadata]
+      operationId: listMetadataProviders
+      summary: Configured metadata sources
+      responses:
+        '200':
+          description: Sources in query order.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProviderList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  # ───────────────────────── shelves & tags ─────────────────────────
+  /api/v1/shelves:
+    get:
+      tags: [shelves]
+      operationId: listShelves
+      summary: The current user's shelf tree, flattened
+      description: Every path segment appears as its own entry; `count` counts books directly in the shelf, `totalCount` includes sub-shelves.
+      responses:
+        '200':
+          description: Shelves sorted by path.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ShelfList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/shelves/rename:
+    post:
+      tags: [shelves]
+      operationId: renameShelf
+      summary: Rename or move a shelf with all sub-shelves
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RenameShelfRequest'}
+      responses:
+        '200':
+          description: Number of books moved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RenameShelfResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/tags:
+    get:
+      tags: [shelves]
+      operationId: listTags
+      summary: Library tags with book counts
+      responses:
+        '200':
+          description: Tags sorted by name.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TagList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  # ───────────────────────── stats ─────────────────────────
+  /api/v1/stats/summary:
+    get:
+      tags: [stats]
+      operationId: getStatsSummary
+      summary: Reading time totals and streaks
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/TZ'
+      responses:
+        '200':
+          description: Summary.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatsSummary'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/stats/daily:
+    get:
+      tags: [stats]
+      operationId: getStatsDaily
+      summary: Reading time per calendar day
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/TZ'
+      responses:
+        '200':
+          description: Days with reading activity, ascending.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DailyStats'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/v1/stats/books:
+    get:
+      tags: [stats]
+      operationId: getStatsBooks
+      summary: Reading time per book
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 50}}
+      responses:
+        '200':
+          description: Books by reading time, descending.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BookStats'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  # ───────────────────────── Readest sync ─────────────────────────
+  /api/sync:
+    get:
+      tags: [readest-sync]
+      operationId: readestPull
+      summary: Pull rows changed since a timestamp
+      description: |
+        Readest v0.12.20 `GET /api/sync`. `books` page on the server-assigned `synced_at` cursor, `configs` and
+        `notes` on `updated_at`/`deleted_at`, stats on `updated_at`. With `limit` and `type=books|stats` one page is
+        returned, completed to the trailing millisecond so a strict `> cursor` never skips rows.
+      parameters:
+        - {name: since, in: query, required: true, schema: {type: string}, description: Epoch milliseconds.}
+        - {name: type, in: query, schema: {type: string, enum: [books, configs, notes, stats]}}
+        - {name: book, in: query, schema: {type: string}}
+        - {name: meta_hash, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: Changed rows.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReadestPullResponse'}
+        '400': {$ref: '#/components/responses/ReadestError'}
+        '403': {$ref: '#/components/responses/ReadestError'}
+    post:
+      tags: [readest-sync]
+      operationId: readestPush
+      summary: Push local changes and get the authoritative rows back
+      description: |
+        Rows merge with Readest's rules: whole-row last-writer-wins on `updatedAt`/`deletedAt`, with independent
+        field clocks for reading status, cover, metadata group and shelf group; read-aloud packs merge as a union;
+        page statistics keep the longer duration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReadestPushRequest'}
+      responses:
+        '200':
+          description: Authoritative rows after the merge.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReadestPushResponse'}
+        '400': {$ref: '#/components/responses/ReadestError'}
+        '403': {$ref: '#/components/responses/ReadestError'}
+  /api/sync/replicas:
+    get:
+      tags: [readest-sync]
+      operationId: readestPullReplicas
+      summary: Pull replica rows of one kind after an HLC cursor
+      parameters:
+        - {name: kind, in: query, required: true, schema: {$ref: '#/components/schemas/ReplicaKind'}}
+        - {name: since, in: query, schema: {type: string}, description: HLC cursor (exclusive).}
+      responses:
+        '200':
+          description: Up to 1000 rows ordered by `updated_at_ts`.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReplicaRows'}
+        '400': {$ref: '#/components/responses/ReplicaError'}
+        '401': {$ref: '#/components/responses/ReplicaError'}
+        '422': {$ref: '#/components/responses/ReplicaError'}
+    post:
+      tags: [readest-sync]
+      operationId: readestPostReplicas
+      summary: Push replica rows, or batch-pull several kinds
+      description: |
+        A body with `cursors` is a batch pull (`{"results": [...]}` back); otherwise `rows` are merged field by field
+        on their HLC envelopes and the merged rows are returned (`{"rows": [...]}`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReplicaPostRequest'}
+      responses:
+        '200':
+          description: Merged rows or pull results.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReplicaPostResponse'}
+        '400': {$ref: '#/components/responses/ReplicaError'}
+        '401': {$ref: '#/components/responses/ReplicaError'}
+        '403': {$ref: '#/components/responses/ReplicaError'}
+        '409': {$ref: '#/components/responses/ReplicaError'}
+        '413': {$ref: '#/components/responses/ReplicaError'}
+        '422': {$ref: '#/components/responses/ReplicaError'}
+  /api/sync/replica-keys:
+    get:
+      tags: [readest-sync]
+      operationId: readestListReplicaKeys
+      summary: List the user's encryption salts
+      responses:
+        '200':
+          description: Salts.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReplicaKeyList'}
+        '401': {$ref: '#/components/responses/ReplicaError'}
+    post:
+      tags: [readest-sync]
+      operationId: readestCreateReplicaKey
+      summary: Create an encryption salt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateReplicaKeyRequest'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReplicaKeyCreated'}
+        '401': {$ref: '#/components/responses/ReplicaError'}
+        '422': {$ref: '#/components/responses/ReplicaError'}
+    delete:
+      tags: [readest-sync]
+      operationId: readestForgetReplicaKeys
+      summary: Forget every salt and the encrypted fields that depend on them
+      responses:
+        '200':
+          description: Forgotten.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OkResponse'}
+        '401': {$ref: '#/components/responses/ReplicaError'}
+
+  # ───────────────────────── Readest storage ─────────────────────────
+  /api/storage/upload:
+    post:
+      tags: [readest-storage]
+      operationId: storageUploadUrl
+      summary: Get a signed URL to PUT a file to
+      description: |
+        `fileName` is the object path below the user (`Readest/Books/<hash>/<name>.<ext>`). A book file is ingested
+        into the shared library when the PUT completes; covers and other files are stored per user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UploadUrlRequest'}
+      responses:
+        '200':
+          description: Signed URL valid for 30 minutes.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadUrlResponse'}
+        '400': {$ref: '#/components/responses/ReadestError'}
+        '403': {$ref: '#/components/responses/ReadestError'}
+        '413': {$ref: '#/components/responses/ReadestError'}
+  /api/storage/download:
+    get:
+      tags: [readest-storage]
+      operationId: storageDownloadUrl
+      summary: Get a signed download URL for one file
+      parameters:
+        - {name: fileKey, in: query, required: true, schema: {type: string}, description: '`<userId>/<fileName>`'}
+      responses:
+        '200':
+          description: Signed URL valid for 30 minutes.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DownloadUrlResponse'}
+        '400': {$ref: '#/components/responses/ReadestError'}
+        '403': {$ref: '#/components/responses/ReadestError'}
+        '404': {$ref: '#/components/responses/ReadestError'}
+    post:
+      tags: [readest-storage]
+      operationId: storageDownloadUrls
+      summary: Get signed download URLs for many files
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DownloadUrlsRequest'}
+      responses:
+        '200':
+          description: URL per key; unknown keys map to null.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DownloadUrlsResponse'}
+        '400': {$ref: '#/components/responses/ReadestError'}
+        '403': {$ref: '#/components/responses/ReadestError'}
+  /api/storage/list:
+    get:
+      tags: [readest-storage]
+      operationId: storageList
+      summary: List the user's files
+      parameters:
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: pageSize, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 50}}
+        - {name: sortBy, in: query, schema: {type: string, enum: [created_at, updated_at, file_size, file_key], default: created_at}}
+        - {name: sortOrder, in: query, schema: {type: string, enum: [asc, desc], default: desc}}
+        - {name: bookHash, in: query, schema: {type: string}}
+        - {name: search, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: Files, with every other file of the same book or replica included.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StorageListResponse'}
+        '403': {$ref: '#/components/responses/ReadestError'}
+  /api/storage/delete:
+    delete:
+      tags: [readest-storage]
+      operationId: storageDelete
+      summary: Delete one file
+      description: Deleting a library book file removes the book from the library and requires an admin.
+      parameters:
+        - {name: fileKey, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MessageResponse'}
+        '400': {$ref: '#/components/responses/ReadestError'}
+        '403': {$ref: '#/components/responses/ReadestError'}
+        '404': {$ref: '#/components/responses/ReadestError'}
+  /api/storage/objects/{token}:
+    parameters:
+      - {name: token, in: path, required: true, schema: {type: string}, description: Signed capability returned by the upload/download endpoints.}
+    put:
+      tags: [readest-storage]
+      operationId: storagePutObject
+      summary: Upload target of a signed URL
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200': {description: Stored.}
+        '400': {$ref: '#/components/responses/ReadestError'}
+        '403': {$ref: '#/components/responses/ReadestError'}
+        '413': {$ref: '#/components/responses/ReadestError'}
+    get:
+      tags: [readest-storage]
+      operationId: storageGetObject
+      summary: Download target of a signed URL
+      description: Supports `Range`.
+      security: []
+      responses:
+        '200':
+          description: File bytes.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '206':
+          description: Partial content.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '403': {$ref: '#/components/responses/ReadestError'}
+        '404': {$ref: '#/components/responses/ReadestError'}
+
+  # ───────────────────────── GoTrue subset ─────────────────────────
+  /auth/v1/token:
+    post:
+      tags: [gotrue]
+      operationId: gotrueToken
+      summary: Password or refresh-token grant
+      description: '`email` accepts a username or an email address.'
+      security: []
+      parameters:
+        - name: grant_type
+          in: query
+          required: true
+          schema: {type: string, enum: [password, refresh_token]}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoTrueTokenRequest'}
+      responses:
+        '200':
+          description: Session.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoTrueSession'}
+        '400': {$ref: '#/components/responses/GoTrueError'}
+        '401': {$ref: '#/components/responses/GoTrueError'}
+  /auth/v1/logout:
+    post:
+      tags: [gotrue]
+      operationId: gotrueLogout
+      summary: Revoke every refresh token of the user
+      parameters:
+        - {name: scope, in: query, schema: {type: string, enum: [global, local, others]}}
+      responses:
+        '204': {description: Logged out.}
+        '401': {$ref: '#/components/responses/GoTrueError'}
+  /auth/v1/user:
+    get:
+      tags: [gotrue]
+      operationId: gotrueUser
+      summary: The authenticated user in GoTrue shape
+      responses:
+        '200':
+          description: User.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoTrueUser'}
+        '401': {$ref: '#/components/responses/GoTrueError'}
+
+  # ───────────────────────── KOSync ─────────────────────────
+  /kosync/healthcheck:
+    get:
+      tags: [kosync]
+      operationId: kosyncHealthcheck
+      summary: KOSync health check
+      security: []
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KosyncHealth'}
+  /kosync/users/create:
+    post:
+      tags: [kosync]
+      operationId: kosyncCreateUser
+      summary: Registration (always disabled)
+      description: Accounts and device keys are managed through the native API.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '402': {$ref: '#/components/responses/KosyncError'}
+  /kosync/users/auth:
+    get:
+      tags: [kosync]
+      operationId: kosyncAuth
+      summary: Check credentials
+      security:
+        - kosyncUser: []
+          kosyncKey: []
+      responses:
+        '200':
+          description: Authorized.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KosyncAuthResult'}
+        '401': {$ref: '#/components/responses/KosyncError'}
+  /kosync/syncs/progress:
+    put:
+      tags: [kosync]
+      operationId: kosyncPutProgress
+      summary: Store the reading position of a document
+      description: |
+        `document` is the partial MD5 (binary mode) or the MD5 of the file name. EPUB XPointer positions are also
+        written to the Readest book config of the matching library book, so Readest opens the book there.
+      security:
+        - kosyncUser: []
+          kosyncKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/KosyncProgressIn'}
+      responses:
+        '200':
+          description: Stored.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KosyncPutResult'}
+        '401': {$ref: '#/components/responses/KosyncError'}
+        '403': {$ref: '#/components/responses/KosyncError'}
+  /kosync/syncs/progress/{document}:
+    get:
+      tags: [kosync]
+      operationId: kosyncGetProgress
+      summary: The newest position of a document
+      description: An unknown document answers `200 {}` as the reference server does.
+      security:
+        - kosyncUser: []
+          kosyncKey: []
+      parameters:
+        - {name: document, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Position, or `{}` when none.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KosyncProgress'}
+        '401': {$ref: '#/components/responses/KosyncError'}
+
+  # ───────────────────────── OPDS ─────────────────────────
+  /opds:
+    get:
+      tags: [opds]
+      operationId: opdsRoot
+      summary: Root navigation feed
+      security:
+        - basicAuth: []
+      responses:
+        '200': {$ref: '#/components/responses/OpdsFeed'}
+        '401': {$ref: '#/components/responses/OpdsUnauthorized'}
+  /opds/books:
+    get:
+      tags: [opds]
+      operationId: opdsBooks
+      summary: Acquisition feed of library books
+      security:
+        - basicAuth: []
+      parameters:
+        - name: sort
+          in: query
+          schema: {type: string, enum: [added, title], default: added}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/ReadingStatus'}}
+        - {name: tag, in: query, schema: {type: string}}
+        - $ref: '#/components/parameters/OpdsPage'
+      responses:
+        '200': {$ref: '#/components/responses/OpdsFeed'}
+        '401': {$ref: '#/components/responses/OpdsUnauthorized'}
+  /opds/shelves:
+    get:
+      tags: [opds]
+      operationId: opdsShelf
+      summary: One shelf level
+      description: Sub-shelves as navigation entries, then the books directly on the shelf. Without `path` the top-level shelves are listed.
+      security:
+        - basicAuth: []
+      parameters:
+        - {name: path, in: query, schema: {type: string}}
+        - $ref: '#/components/parameters/OpdsPage'
+      responses:
+        '200': {$ref: '#/components/responses/OpdsFeed'}
+        '401': {$ref: '#/components/responses/OpdsUnauthorized'}
+  /opds/tags:
+    get:
+      tags: [opds]
+      operationId: opdsTags
+      summary: Navigation feed of tags
+      security:
+        - basicAuth: []
+      responses:
+        '200': {$ref: '#/components/responses/OpdsFeed'}
+        '401': {$ref: '#/components/responses/OpdsUnauthorized'}
+  /opds/search:
+    get:
+      tags: [opds]
+      operationId: opdsSearch
+      summary: Search results as an acquisition feed
+      security:
+        - basicAuth: []
+      parameters:
+        - {name: q, in: query, required: true, schema: {type: string}}
+        - $ref: '#/components/parameters/OpdsPage'
+      responses:
+        '200': {$ref: '#/components/responses/OpdsFeed'}
+        '401': {$ref: '#/components/responses/OpdsUnauthorized'}
+  /opds/opensearch.xml:
+    get:
+      tags: [opds]
+      operationId: opdsOpenSearch
+      summary: OpenSearch description document
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: OpenSearch description.
+          content:
+            application/opensearchdescription+xml:
+              schema: {type: string}
+        '401': {$ref: '#/components/responses/OpdsUnauthorized'}
+  /opds/books/{hash}/file:
+    parameters:
+      - $ref: '#/components/parameters/BookHash'
+    get:
+      tags: [opds]
+      operationId: opdsDownload
+      summary: Acquisition link target
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: The file.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '206':
+          description: Partial content.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '401': {$ref: '#/components/responses/OpdsUnauthorized'}
+        '404': {description: Unknown book.}
+  /opds/books/{hash}/cover:
+    parameters:
+      - $ref: '#/components/parameters/BookHash'
+    get:
+      tags: [opds]
+      operationId: opdsCover
+      summary: Image and thumbnail link target
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: Image bytes.
+          content:
+            image/*:
+              schema: {type: string, format: binary}
+        '304': {description: Not modified.}
+        '401': {$ref: '#/components/responses/OpdsUnauthorized'}
+        '404': {description: No cover.}
+
+  # ───────────────────────── proxies ─────────────────────────
+  /api/opds/proxy:
+    get:
+      tags: [proxy]
+      operationId: proxyOpds
+      summary: Fetch an external OPDS feed, cover or book
+      description: |
+        Mirrors Readest's `/api/opds/proxy`. Every redirect hop is re-checked against the SSRF policy; credentials are
+        dropped on a cross-origin redirect. Upstream credentials go in `auth` or `X-Upstream-Authorization`, never in
+        `Authorization` (that carries the BookRoom token).
+      security:
+        - bearerAuth: []
+        - accessTokenQuery: []
+      parameters:
+        - $ref: '#/components/parameters/ProxyUrl'
+        - $ref: '#/components/parameters/ProxyAuth'
+        - $ref: '#/components/parameters/ProxyStream'
+        - $ref: '#/components/parameters/ProxyHeaders'
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '400': {$ref: '#/components/responses/ProxyError'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '504': {$ref: '#/components/responses/ProxyError'}
+    head:
+      tags: [proxy]
+      operationId: proxyOpdsHead
+      summary: HEAD variant of the OPDS proxy
+      security:
+        - bearerAuth: []
+        - accessTokenQuery: []
+      parameters:
+        - $ref: '#/components/parameters/ProxyUrl'
+        - $ref: '#/components/parameters/ProxyAuth'
+        - $ref: '#/components/parameters/ProxyStream'
+        - $ref: '#/components/parameters/ProxyHeaders'
+      responses:
+        '200': {description: Upstream headers.}
+        '400': {$ref: '#/components/responses/ProxyError'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+  /api/kosync:
+    post:
+      tags: [proxy]
+      operationId: proxyKosync
+      summary: Forward a KOSync call to an external server
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProxyForwardRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '400': {$ref: '#/components/responses/ProxyError'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '500': {$ref: '#/components/responses/ProxyError'}
+  /api/bookorbit:
+    post:
+      tags: [proxy]
+      operationId: proxyBookorbit
+      summary: Forward a BookOrbit KOReader-plugin call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProxyForwardRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '400': {$ref: '#/components/responses/ProxyError'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '500': {$ref: '#/components/responses/ProxyError'}
+  /api/grimmory:
+    post:
+      tags: [proxy]
+      operationId: proxyGrimmory
+      summary: Forward a Grimmory API call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GrimmoryProxyRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '400': {$ref: '#/components/responses/ProxyError'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '500': {$ref: '#/components/responses/ProxyError'}
+  /api/hardcover/graphql:
+    post:
+      tags: [proxy]
+      operationId: proxyHardcover
+      summary: Forward a Hardcover GraphQL request
+      description: The Hardcover token goes in `X-Upstream-Authorization`.
+      parameters:
+        - {name: X-Upstream-Authorization, in: header, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '400': {$ref: '#/components/responses/ProxyError'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '502': {$ref: '#/components/responses/ProxyError'}
+  /api/notion/{collection}:
+    parameters:
+      - $ref: '#/components/parameters/NotionA'
+    post:
+      tags: [proxy]
+      operationId: proxyNotion1Post
+      summary: Notion `POST /pages`
+      parameters:
+        - $ref: '#/components/parameters/NotionToken'
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '404': {$ref: '#/components/responses/ProxyError'}
+  /api/notion/{collection}/{id}:
+    parameters:
+      - $ref: '#/components/parameters/NotionA'
+      - $ref: '#/components/parameters/NotionB'
+      - $ref: '#/components/parameters/NotionToken'
+    get:
+      tags: [proxy]
+      operationId: proxyNotion2Get
+      summary: Notion `GET /users/me`, `/data_sources/{id}`, `/databases/{id}`, `/pages/{id}`
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '404': {$ref: '#/components/responses/ProxyError'}
+    patch:
+      tags: [proxy]
+      operationId: proxyNotion2Patch
+      summary: Notion `PATCH /pages/{id}`
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '404': {$ref: '#/components/responses/ProxyError'}
+    delete:
+      tags: [proxy]
+      operationId: proxyNotion2Delete
+      summary: Notion `DELETE /blocks/{id}`
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '404': {$ref: '#/components/responses/ProxyError'}
+  /api/notion/{collection}/{id}/{action}:
+    parameters:
+      - $ref: '#/components/parameters/NotionA'
+      - $ref: '#/components/parameters/NotionB'
+      - {name: action, in: path, required: true, schema: {type: string}}
+      - $ref: '#/components/parameters/NotionToken'
+    get:
+      tags: [proxy]
+      operationId: proxyNotion3Get
+      summary: Notion `GET /blocks/{id}/children`
+      parameters:
+        - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 100}}
+        - {name: start_cursor, in: query, schema: {type: string, maxLength: 512}}
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '404': {$ref: '#/components/responses/ProxyError'}
+    post:
+      tags: [proxy]
+      operationId: proxyNotion3Post
+      summary: Notion `POST /data_sources/{id}/query`
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '404': {$ref: '#/components/responses/ProxyError'}
+    patch:
+      tags: [proxy]
+      operationId: proxyNotion3Patch
+      summary: Notion `PATCH /blocks/{id}/children`
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200': {$ref: '#/components/responses/Passthrough'}
+        '401': {$ref: '#/components/responses/ProxyError'}
+        '404': {$ref: '#/components/responses/ProxyError'}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token from `/api/v1/auth/login` or `/auth/v1/token`. Scope `admin` marks admin-only operations.
+    accessTokenQuery:
+      type: apiKey
+      in: query
+      name: access_token
+      description: The same access token as a query parameter, for proxy URLs used in `<img>` tags.
+    kosyncUser:
+      type: apiKey
+      in: header
+      name: x-auth-user
+      description: Any non-empty label; the key alone identifies the user.
+    kosyncKey:
+      type: apiKey
+      in: header
+      name: x-auth-key
+      description: Lowercase hex MD5 of a device key (KOSync clients hash the password themselves).
+    basicAuth:
+      type: http
+      scheme: basic
+      description: Username with the account password or with a device key.
+
+  parameters:
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: {type: string}
+    BookHash:
+      name: hash
+      in: path
+      required: true
+      description: Partial MD5 of the file, 32 lowercase hex characters.
+      schema: {$ref: '#/components/schemas/BookHash'}
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor from a previous page's `nextCursor`.
+      schema: {type: string}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    From:
+      name: from
+      in: query
+      description: Inclusive start date (default 30 days before `to`).
+      schema: {type: string, format: date}
+    To:
+      name: to
+      in: query
+      description: Inclusive end date (default today).
+      schema: {type: string, format: date}
+    TZ:
+      name: tz
+      in: query
+      description: IANA time zone for day boundaries (default the server's).
+      schema: {type: string, example: Asia/Shanghai}
+    OpdsPage:
+      name: page
+      in: query
+      schema: {type: integer, minimum: 1, default: 1}
+    ProxyUrl:
+      name: url
+      in: query
+      required: true
+      schema: {type: string}
+    ProxyAuth:
+      name: auth
+      in: query
+      description: Upstream `Authorization` value.
+      schema: {type: string}
+    ProxyStream:
+      name: stream
+      in: query
+      schema: {type: string, enum: ['true', 'false']}
+    ProxyHeaders:
+      name: headers
+      in: query
+      description: JSON object of extra upstream headers.
+      schema: {type: string}
+    NotionA:
+      name: collection
+      in: path
+      required: true
+      schema: {type: string}
+    NotionB:
+      name: id
+      in: path
+      required: true
+      schema: {type: string}
+    NotionToken:
+      name: x-notion-token
+      in: header
+      required: true
+      description: '`Bearer secret_…` or `Bearer ntn_…`'
+      schema: {type: string}
+
+  responses:
+    BadRequest:
+      description: Invalid input.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Unauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Forbidden:
+      description: Authenticated but not allowed.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    NotFound:
+      description: No such resource.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Conflict:
+      description: Conflicts with existing state.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    TooLarge:
+      description: Body exceeds the configured limit.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Unsupported:
+      description: Unsupported file format.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Upstream:
+      description: A metadata source failed.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    ReadestError:
+      description: Readest-style error.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ReadestError'}
+    ReplicaError:
+      description: Replica sync error with a machine code.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ReplicaError'}
+    GoTrueError:
+      description: GoTrue-style error.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/GoTrueError'}
+    KosyncError:
+      description: KOSync error with a numeric code.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/KosyncError'}
+    OpdsFeed:
+      description: Atom feed (`application/atom+xml;profile=opds-catalog;kind=navigation|acquisition`).
+      content:
+        application/atom+xml:
+          schema: {type: string}
+    OpdsUnauthorized:
+      description: Basic credentials required (`WWW-Authenticate` is set).
+      content:
+        text/plain:
+          schema: {type: string}
+    Passthrough:
+      description: Upstream status, body and safe headers passed through.
+      content:
+        '*/*':
+          schema: {type: string, format: binary}
+    ProxyError:
+      description: Proxy-level failure.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ProxyError'}
+
+  schemas:
+    # ── shared ──
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      required: [type, title, status]
+      properties:
+        type: {type: string, description: 'Stable URI, e.g. `https://bookroom.dev/problems/not-found`.'}
+        title: {type: string}
+        status: {type: integer}
+        detail: {type: string}
+        instance: {type: string}
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status: {type: string, example: ok}
+        version: {type: string}
+    BookHash:
+      type: string
+      pattern: '^[0-9a-f]{32}$'
+    BookFormat:
+      type: string
+      enum: [EPUB, PDF, MOBI, AZW, AZW3, CBZ, CBR, FB2, FBZ, TXT, MD]
+    ReadingStatus:
+      type: string
+      enum: [unread, reading, finished, abandoned]
+    WorkType:
+      type: string
+      description: '`webnovel` (no ISBN, serialized) and `published` (has ISBN) metadata never merge.'
+      enum: [unknown, published, webnovel]
+    MetadataField:
+      type: string
+      enum: [title, authors, series, seriesIndex, description, publisher, published, language, isbn, tags, cover, workType]
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok: {type: boolean}
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message: {type: string}
+
+    # ── auth ──
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: {type: string, minLength: 1}
+        password: {type: string, minLength: 1}
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: {type: string, minLength: 1}
+    TokenPair:
+      type: object
+      required: [accessToken, refreshToken, tokenType, expiresIn, expiresAt, user]
+      properties:
+        accessToken: {type: string}
+        refreshToken: {type: string}
+        tokenType: {type: string, example: Bearer}
+        expiresIn: {type: integer, description: Seconds until the access token expires.}
+        expiresAt: {type: string, format: date-time}
+        user: {$ref: '#/components/schemas/User'}
+    User:
+      type: object
+      required: [id, username, isAdmin, createdAt]
+      properties:
+        id: {type: string}
+        username: {type: string}
+        email: {type: string}
+        isAdmin: {type: boolean}
+        createdAt: {type: string, format: date-time}
+    UserList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/User'}
+    CreateUserRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: {type: string, minLength: 1, maxLength: 64, pattern: '^[^:\s]+$'}
+        password: {type: string, minLength: 8}
+        email: {type: string, format: email}
+        isAdmin: {type: boolean, default: false}
+    ChangePasswordRequest:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword: {type: string}
+        newPassword: {type: string, minLength: 8}
+    ResetPasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password: {type: string, minLength: 8}
+
+    # ── devices ──
+    Device:
+      type: object
+      required: [id, name, createdAt]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        createdAt: {type: string, format: date-time}
+        lastUsedAt: {type: string, format: date-time}
+    DeviceList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Device'}
+    CreateDeviceRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100}
+    DeviceCreated:
+      type: object
+      required: [device, key, kosyncUsername]
+      properties:
+        device: {$ref: '#/components/schemas/Device'}
+        key: {type: string, description: Shown once.}
+        kosyncUsername: {type: string}
+
+    # ── books ──
+    Book:
+      type: object
+      required: [hash, format, size, title, authors, tags, workType, hasCover, lockedFields, addedAt, updatedAt, state]
+      properties:
+        hash: {$ref: '#/components/schemas/BookHash'}
+        format: {$ref: '#/components/schemas/BookFormat'}
+        size: {type: integer, format: int64}
+        originalFilename: {type: string}
+        title: {type: string}
+        authors:
+          type: array
+          items: {type: string}
+        series: {type: string}
+        seriesIndex: {type: number}
+        description: {type: string}
+        publisher: {type: string}
+        published: {type: string, description: 'Free-form date, e.g. `2008` or `2008-01-09`.'}
+        language: {type: string}
+        isbn: {type: string}
+        tags:
+          type: array
+          items: {type: string}
+        pageCount: {type: integer}
+        workType: {$ref: '#/components/schemas/WorkType'}
+        hasCover: {type: boolean}
+        lockedFields:
+          type: array
+          items: {$ref: '#/components/schemas/MetadataField'}
+        metadataSource: {type: string, description: 'Source of the last applied scrape, e.g. `openlibrary:OL123W`.'}
+        webnovel: {$ref: '#/components/schemas/WebnovelInfo'}
+        addedAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        state: {$ref: '#/components/schemas/BookState'}
+    WebnovelInfo:
+      type: object
+      properties:
+        wordCount: {type: integer, format: int64}
+        chapterCount: {type: integer}
+        status: {type: string, enum: [ongoing, completed]}
+        latestChapter: {type: string}
+        latestUpdate: {type: string}
+        sourceUrl: {type: string}
+    BookState:
+      type: object
+      properties:
+        shelf: {type: string, description: Shelf path; absent when unshelved.}
+        readingStatus: {$ref: '#/components/schemas/ReadingStatus'}
+        progress:
+          type: array
+          description: '`[current, total]` pages as reported by Readest.'
+          items: {type: number}
+        lastReadAt: {type: string, format: date-time}
+    BookPage:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Book'}
+        total: {type: integer, description: Number of matching books.}
+        nextCursor: {type: string, description: Absent on the last page.}
+    BookMetadataPatch:
+      type: object
+      minProperties: 1
+      properties:
+        title: {type: string, minLength: 1}
+        authors:
+          type: array
+          items: {type: string}
+        series: {type: string}
+        seriesIndex: {type: number}
+        description: {type: string}
+        publisher: {type: string}
+        published: {type: string}
+        language: {type: string}
+        isbn: {type: string}
+        tags:
+          type: array
+          items: {type: string}
+        workType: {$ref: '#/components/schemas/WorkType'}
+    BookStateUpdate:
+      type: object
+      minProperties: 1
+      description: Absent fields stay; `null` or empty clears.
+      properties:
+        shelf: {type: string, nullable: true}
+        readingStatus:
+          type: string
+          nullable: true
+          enum: [unread, reading, finished, abandoned]
+    MetadataLocks:
+      type: object
+      required: [fields]
+      properties:
+        fields:
+          type: array
+          items: {$ref: '#/components/schemas/MetadataField'}
+
+    # ── metadata ──
+    MetadataQuery:
+      type: object
+      properties:
+        provider: {type: string, description: Only this source.}
+        title: {type: string}
+        author: {type: string}
+        isbn: {type: string}
+    MetadataCandidate:
+      type: object
+      required: [provider, providerId, workType, title, authors, tags, score]
+      properties:
+        provider: {type: string}
+        providerId: {type: string}
+        workType: {$ref: '#/components/schemas/WorkType'}
+        title: {type: string}
+        authors:
+          type: array
+          items: {type: string}
+        series: {type: string}
+        seriesIndex: {type: number}
+        description: {type: string}
+        publisher: {type: string}
+        published: {type: string}
+        language: {type: string}
+        isbn: {type: string}
+        tags:
+          type: array
+          items: {type: string}
+        pageCount: {type: integer}
+        coverUrl: {type: string}
+        sourceUrl: {type: string}
+        webnovel: {$ref: '#/components/schemas/WebnovelInfo'}
+        score: {type: integer, minimum: 0, maximum: 100}
+    CandidateList:
+      type: object
+      required: [candidates, errors]
+      properties:
+        candidates:
+          type: array
+          items: {$ref: '#/components/schemas/MetadataCandidate'}
+        errors:
+          type: array
+          items: {$ref: '#/components/schemas/ProviderError'}
+    ProviderError:
+      type: object
+      required: [provider, message]
+      properties:
+        provider: {type: string}
+        message: {type: string}
+        retryAt: {type: string, format: date-time, description: Set when the source's quota is exhausted.}
+    ApplyMetadataRequest:
+      type: object
+      required: [provider, providerId]
+      properties:
+        provider: {type: string}
+        providerId: {type: string}
+        fields:
+          type: array
+          items: {$ref: '#/components/schemas/MetadataField'}
+    ScrapeJob:
+      type: object
+      required: [hash, status]
+      properties:
+        hash: {$ref: '#/components/schemas/BookHash'}
+        status: {type: string, enum: [pending, done, no_match, failed]}
+        nextRunAt: {type: string, format: date-time}
+    MetadataProvider:
+      type: object
+      required: [id, name, workType, enabled]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        workType: {$ref: '#/components/schemas/WorkType'}
+        enabled: {type: boolean}
+        reason: {type: string, description: Why the source is disabled.}
+        pausedUntil: {type: string, format: date-time}
+    ProviderList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/MetadataProvider'}
+
+    # ── shelves ──
+    Shelf:
+      type: object
+      required: [path, name, depth, count, totalCount]
+      properties:
+        path: {type: string}
+        name: {type: string}
+        depth: {type: integer}
+        count: {type: integer}
+        totalCount: {type: integer}
+    ShelfList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Shelf'}
+    RenameShelfRequest:
+      type: object
+      required: [from, to]
+      properties:
+        from: {type: string, minLength: 1}
+        to: {type: string, description: New path; empty removes the shelf (books become unshelved).}
+    RenameShelfResult:
+      type: object
+      required: [moved]
+      properties:
+        moved: {type: integer}
+    Tag:
+      type: object
+      required: [name, count]
+      properties:
+        name: {type: string}
+        count: {type: integer}
+    TagList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Tag'}
+
+    # ── stats ──
+    StatsSummary:
+      type: object
+      required: [from, to, totalSeconds, totalPages, booksRead, readingDays, currentStreak, longestStreak]
+      properties:
+        from: {type: string, format: date}
+        to: {type: string, format: date}
+        totalSeconds: {type: integer, format: int64}
+        totalPages: {type: integer, format: int64, description: Distinct pages turned.}
+        booksRead: {type: integer}
+        readingDays: {type: integer}
+        currentStreak: {type: integer, description: Consecutive days ending today or yesterday (all history).}
+        longestStreak: {type: integer, description: Longest run of consecutive days (all history).}
+    DailyStat:
+      type: object
+      required: [date, seconds, pages]
+      properties:
+        date: {type: string, format: date}
+        seconds: {type: integer, format: int64}
+        pages: {type: integer, format: int64}
+    DailyStats:
+      type: object
+      required: [timezone, items]
+      properties:
+        timezone: {type: string}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/DailyStat'}
+    BookStat:
+      type: object
+      required: [bookHash, title, authors, seconds, pages, lastReadAt]
+      properties:
+        bookHash: {type: string}
+        title: {type: string}
+        authors: {type: string}
+        seconds: {type: integer, format: int64}
+        pages: {type: integer, format: int64}
+        lastReadAt: {type: string, format: date-time}
+    BookStats:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/BookStat'}
+
+    # ── Readest sync (wire format of Readest v0.12.20) ──
+    ReadestError:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}
+    ReadestBookIn:
+      type: object
+      description: A Readest `Book` (camelCase). Unknown properties are ignored. Times are epoch milliseconds.
+      required: [hash]
+      additionalProperties: true
+      properties:
+        hash: {type: string}
+        metaHash: {type: string}
+        format: {type: string}
+        title: {type: string}
+        sourceTitle: {type: string}
+        originalFilename: {type: string}
+        author: {type: string}
+        groupId: {type: string}
+        groupName: {type: string}
+        groupUpdatedAt: {type: number, nullable: true}
+        tags:
+          type: array
+          nullable: true
+          items: {type: string}
+        progress:
+          type: array
+          nullable: true
+          items: {type: number}
+        readingStatus: {type: string}
+        readingStatusUpdatedAt: {type: number, nullable: true}
+        coverHash: {type: string, nullable: true}
+        coverUpdatedAt: {type: number, nullable: true}
+        pageCount: {type: integer, nullable: true}
+        metadata:
+          description: Readest `BookMetadata` object.
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        metadataUpdatedAt: {type: number, nullable: true}
+        createdAt: {type: number, nullable: true}
+        updatedAt: {type: number, nullable: true}
+        deletedAt: {type: number, nullable: true}
+        uploadedAt: {type: number, nullable: true}
+    ReadestConfigIn:
+      type: object
+      description: A Readest `BookConfig`. Opaque JSON members are stored verbatim; absent ones keep the stored value.
+      required: [bookHash]
+      additionalProperties: true
+      properties:
+        bookHash: {type: string}
+        metaHash: {type: string}
+        location: {type: string}
+        xpointer: {type: string}
+        progress:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        rsvpPosition:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        searchConfig:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        viewSettings:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        ttsPacks:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        updatedAt: {type: number, nullable: true}
+    ReadestNoteIn:
+      type: object
+      description: A Readest `BookNote` (highlight, annotation, bookmark, ink).
+      required: [bookHash, id]
+      additionalProperties: true
+      properties:
+        bookHash: {type: string}
+        metaHash: {type: string}
+        id: {type: string}
+        type: {type: string}
+        cfi: {type: string}
+        xpointer0: {type: string, nullable: true}
+        xpointer1: {type: string, nullable: true}
+        page: {type: number, nullable: true}
+        text: {type: string}
+        style: {type: string}
+        color: {type: string}
+        note: {type: string}
+        global:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        ink:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        crosspoint:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        createdAt: {type: number, nullable: true}
+        updatedAt: {type: number, nullable: true}
+        deletedAt: {type: number, nullable: true}
+    ReadestStatBook:
+      type: object
+      required: [book_hash]
+      properties:
+        user_id: {type: string}
+        book_hash: {type: string}
+        title: {type: string}
+        authors: {type: string}
+        updated_at: {type: string}
+        updated_at_ms: {type: integer, format: int64}
+        deleted_at: {type: string}
+        deleted_at_ms: {type: integer, format: int64}
+    ReadestStatPage:
+      type: object
+      description: One KOReader page event; seconds since the epoch.
+      required: [book_hash, page, start_time, duration]
+      properties:
+        user_id: {type: string}
+        book_hash: {type: string}
+        page: {type: number}
+        start_time: {type: number}
+        duration: {type: number}
+        total_pages: {type: number}
+        ext:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        updated_at: {type: string}
+        updated_at_ms: {type: integer, format: int64}
+        deleted_at: {type: string}
+        deleted_at_ms: {type: integer, format: int64}
+    ReadestPushRequest:
+      type: object
+      properties:
+        books:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestBookIn'}
+        configs:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestConfigIn'}
+        notes:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestNoteIn'}
+        statBooks:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestStatBook'}
+        statPages:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestStatPage'}
+    ReadestBookRow:
+      type: object
+      description: A `books` row; ISO-8601 times, nulls emitted like PostgREST.
+      required: [user_id, book_hash, meta_hash, format, title, source_title, original_filename, author, group_id, group_name, group_updated_at, tags, progress, reading_status, reading_status_updated_at, cover_hash, cover_updated_at, page_count, metadata, metadata_updated_at, created_at, updated_at, deleted_at, uploaded_at, synced_at]
+      properties:
+        user_id: {type: string}
+        book_hash: {type: string}
+        meta_hash: {type: string, nullable: true}
+        format: {type: string}
+        title: {type: string}
+        source_title: {type: string, nullable: true}
+        original_filename: {type: string, nullable: true}
+        author: {type: string}
+        group_id: {type: string, nullable: true}
+        group_name: {type: string, nullable: true}
+        group_updated_at: {type: string, nullable: true}
+        tags:
+          type: array
+          nullable: true
+          items: {type: string}
+        progress:
+          type: array
+          nullable: true
+          items: {type: number}
+        reading_status: {type: string, nullable: true}
+        reading_status_updated_at: {type: string, nullable: true}
+        cover_hash: {type: string, nullable: true}
+        cover_updated_at: {type: string, nullable: true}
+        page_count: {type: integer, nullable: true}
+        metadata: {type: string, nullable: true, description: JSON-encoded `BookMetadata`.}
+        metadata_updated_at: {type: string, nullable: true}
+        created_at: {type: string, nullable: true}
+        updated_at: {type: string, nullable: true}
+        deleted_at: {type: string, nullable: true}
+        uploaded_at: {type: string, nullable: true}
+        synced_at: {type: string, nullable: true}
+    ReadestConfigRow:
+      type: object
+      required: [user_id, book_hash, meta_hash, location, xpointer, progress, rsvp_position, search_config, view_settings, tts_packs, created_at, updated_at, deleted_at]
+      properties:
+        user_id: {type: string}
+        book_hash: {type: string}
+        meta_hash: {type: string, nullable: true}
+        location: {type: string, nullable: true}
+        xpointer: {type: string, nullable: true}
+        progress: {type: string, nullable: true, description: 'JSON `[current, total]`.'}
+        rsvp_position: {type: string, nullable: true}
+        search_config: {type: string, nullable: true}
+        view_settings: {type: string, nullable: true}
+        tts_packs: {type: string, nullable: true}
+        created_at: {type: string, nullable: true}
+        updated_at: {type: string, nullable: true}
+        deleted_at: {type: string, nullable: true}
+    ReadestNoteRow:
+      type: object
+      required: [user_id, book_hash, meta_hash, id, type, cfi, xpointer0, xpointer1, page, text, style, color, note, global, ink, crosspoint, created_at, updated_at, deleted_at]
+      properties:
+        user_id: {type: string}
+        book_hash: {type: string}
+        meta_hash: {type: string, nullable: true}
+        id: {type: string}
+        type: {type: string, nullable: true}
+        cfi: {type: string, nullable: true}
+        xpointer0: {type: string, nullable: true}
+        xpointer1: {type: string, nullable: true}
+        page: {type: number, nullable: true}
+        text: {type: string, nullable: true}
+        style: {type: string, nullable: true}
+        color: {type: string, nullable: true}
+        note: {type: string, nullable: true}
+        global: {type: boolean, nullable: true}
+        ink:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        crosspoint:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        created_at: {type: string, nullable: true}
+        updated_at: {type: string, nullable: true}
+        deleted_at: {type: string, nullable: true}
+    ReadestPullResponse:
+      type: object
+      required: [books, configs, notes, statBooks, statPages]
+      properties:
+        books:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestBookRow'}
+        configs:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestConfigRow'}
+        notes:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestNoteRow'}
+        statBooks:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestStatBook'}
+        statPages:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestStatPage'}
+    ReadestPushResponse:
+      type: object
+      required: [books, configs, notes]
+      properties:
+        books:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestBookRow'}
+        configs:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestConfigRow'}
+        notes:
+          type: array
+          items: {$ref: '#/components/schemas/ReadestNoteRow'}
+
+    # ── replicas ──
+    ReplicaKind:
+      type: string
+      enum: [bookshelf, dictionary, font, texture, opds_catalog, abs_server, custom_translator, translation_prompt, custom_tts, settings]
+    ReplicaRow:
+      type: object
+      description: |
+        One CRDT row. `fields_jsonb` maps field names to `{v, t, s}` envelopes (value, HLC, device) or to cipher
+        envelopes. HLC format: `<13 hex ms>-<8 hex counter>-<deviceId>`; lexicographic order is time order.
+      required: [user_id, kind, replica_id, fields_jsonb, updated_at_ts, schema_version]
+      properties:
+        user_id: {type: string}
+        kind: {type: string}
+        replica_id: {type: string}
+        fields_jsonb:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        manifest_jsonb:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        deleted_at_ts: {type: string, nullable: true}
+        reincarnation: {type: string, nullable: true}
+        updated_at_ts: {type: string}
+        schema_version: {type: integer}
+        created_at: {type: string}
+        modified_at: {type: string}
+    ReplicaRows:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items: {$ref: '#/components/schemas/ReplicaRow'}
+    ReplicaCursor:
+      type: object
+      required: [kind]
+      properties:
+        kind: {type: string}
+        since: {type: string, nullable: true}
+    ReplicaPostRequest:
+      type: object
+      properties:
+        rows:
+          type: array
+          items: {$ref: '#/components/schemas/ReplicaRow'}
+        cursors:
+          type: array
+          items: {$ref: '#/components/schemas/ReplicaCursor'}
+    ReplicaPullResult:
+      type: object
+      required: [kind, rows]
+      properties:
+        kind: {type: string}
+        rows:
+          type: array
+          items: {$ref: '#/components/schemas/ReplicaRow'}
+    ReplicaPostResponse:
+      type: object
+      properties:
+        rows:
+          type: array
+          items: {$ref: '#/components/schemas/ReplicaRow'}
+        results:
+          type: array
+          items: {$ref: '#/components/schemas/ReplicaPullResult'}
+    ReplicaError:
+      type: object
+      required: [error, code]
+      properties:
+        error: {type: string}
+        code: {type: string, enum: [AUTH, VALIDATION, UNKNOWN_KIND, SCHEMA_TOO_NEW, CLOCK_SKEW, UNSUPPORTED_ALG, SERVER]}
+        offendingIndex: {type: integer}
+    ReplicaKey:
+      type: object
+      required: [saltId, alg, salt, createdAt]
+      properties:
+        saltId: {type: string}
+        alg: {type: string}
+        salt: {type: string, description: Base64.}
+        createdAt: {type: string}
+    ReplicaKeyList:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items: {$ref: '#/components/schemas/ReplicaKey'}
+    ReplicaKeyCreated:
+      type: object
+      required: [row]
+      properties:
+        row: {$ref: '#/components/schemas/ReplicaKey'}
+    CreateReplicaKeyRequest:
+      type: object
+      required: [alg]
+      properties:
+        alg: {type: string, example: pbkdf2-600k-sha256}
+
+    # ── storage ──
+    UploadUrlRequest:
+      type: object
+      required: [fileName, fileSize]
+      properties:
+        fileName: {type: string}
+        fileSize: {type: integer, format: int64, minimum: 1}
+        bookHash: {type: string, nullable: true}
+        replicaKind: {type: string, nullable: true}
+        replicaId: {type: string, nullable: true}
+        temp: {type: boolean}
+        media: {type: string}
+    UploadUrlResponse:
+      type: object
+      required: [uploadUrl]
+      properties:
+        uploadUrl: {type: string}
+        fileKey: {type: string}
+        downloadUrl: {type: string}
+        usage: {type: integer, format: int64}
+        quota: {type: integer, format: int64}
+    DownloadUrlResponse:
+      type: object
+      required: [downloadUrl]
+      properties:
+        downloadUrl: {type: string}
+    DownloadUrlsRequest:
+      type: object
+      required: [fileKeys]
+      properties:
+        fileKeys:
+          type: array
+          minItems: 1
+          items: {type: string}
+    DownloadUrlsResponse:
+      type: object
+      required: [downloadUrls]
+      properties:
+        downloadUrls:
+          type: object
+          additionalProperties: {type: string, nullable: true}
+    StorageFile:
+      type: object
+      required: [file_key, file_size, book_hash, replica_kind, replica_id, created_at, updated_at]
+      properties:
+        file_key: {type: string}
+        file_size: {type: integer, format: int64}
+        book_hash: {type: string, nullable: true}
+        replica_kind: {type: string, nullable: true}
+        replica_id: {type: string, nullable: true}
+        created_at: {type: string}
+        updated_at: {type: string}
+    StorageListResponse:
+      type: object
+      required: [files, total, page, pageSize, totalPages]
+      properties:
+        files:
+          type: array
+          items: {$ref: '#/components/schemas/StorageFile'}
+        total: {type: integer}
+        page: {type: integer}
+        pageSize: {type: integer}
+        totalPages: {type: integer}
+
+    # ── GoTrue ──
+    GoTrueTokenRequest:
+      type: object
+      properties:
+        email: {type: string}
+        password: {type: string}
+        refresh_token: {type: string}
+    GoTrueUser:
+      type: object
+      required: [id, aud, role, email]
+      properties:
+        id: {type: string}
+        aud: {type: string, example: authenticated}
+        role: {type: string, example: authenticated}
+        email: {type: string}
+        user_metadata:
+          type: object
+          additionalProperties: true
+    GoTrueSession:
+      type: object
+      required: [access_token, token_type, expires_in, expires_at, refresh_token, user]
+      properties:
+        access_token: {type: string}
+        token_type: {type: string, example: bearer}
+        expires_in: {type: integer}
+        expires_at: {type: integer, format: int64, description: Epoch seconds.}
+        refresh_token: {type: string}
+        user: {$ref: '#/components/schemas/GoTrueUser'}
+    GoTrueError:
+      type: object
+      required: [error, error_description]
+      properties:
+        error: {type: string}
+        error_description: {type: string}
+        msg: {type: string}
+        code: {type: integer}
+
+    # ── KOSync ──
+    KosyncHealth:
+      type: object
+      required: [state]
+      properties:
+        state: {type: string, example: OK}
+    KosyncAuthResult:
+      type: object
+      required: [authorized]
+      properties:
+        authorized: {type: string, example: OK}
+    KosyncError:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: integer, description: '2001 unauthorized, 2003 invalid request, 2004 invalid document, 2005 registration disabled.'}
+        message: {type: string}
+    KosyncProgressIn:
+      type: object
+      required: [document, progress, percentage, device]
+      properties:
+        document: {type: string}
+        progress: {type: string, description: 'CRE XPointer for reflowable books, page number for fixed layout.'}
+        percentage: {type: number}
+        device: {type: string}
+        device_id: {type: string}
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Optional `filename`, `title`, `authors`; used to link a document to a library book.
+    KosyncPutResult:
+      type: object
+      required: [document, timestamp]
+      properties:
+        document: {type: string}
+        timestamp: {type: integer, format: int64, description: 'Server time, epoch seconds.'}
+    KosyncProgress:
+      type: object
+      description: Empty object when the document has no stored position.
+      properties:
+        document: {type: string}
+        progress: {type: string}
+        percentage: {type: number}
+        device: {type: string}
+        device_id: {type: string}
+        timestamp: {type: integer, format: int64}
+
+    # ── proxies ──
+    ProxyForwardRequest:
+      type: object
+      required: [serverUrl, endpoint, method]
+      properties:
+        serverUrl: {type: string}
+        endpoint: {type: string}
+        method: {type: string, enum: [GET, POST, PUT, DELETE]}
+        headers:
+          type: object
+          additionalProperties: {type: string}
+        body:
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+    GrimmoryProxyRequest:
+      type: object
+      required: [serverUrl, path, method]
+      properties:
+        serverUrl: {type: string}
+        path: {type: string}
+        method: {type: string, enum: [GET, POST, PUT, DELETE]}
+        headers:
+          type: object
+          additionalProperties: {type: string}
+        body: {type: string, nullable: true}
+    ProxyError:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}
+        details: {type: string}
