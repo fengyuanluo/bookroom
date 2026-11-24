@@ -9,5 +9,5 @@
 
 ## 后果
 
-- SQL 只用两种数据库都支持的写法：不用 `INSERT OR REPLACE`，不依赖 `rowid`，时间统一存 UTC 整数毫秒。将来真要迁移，成本只在驱动和迁移脚本上。
+- SQL 只用两种数据库都支持的写法：不用 `INSERT OR REPLACE`，不依赖 `rowid`，时间统一存 UTC 整数毫秒。将来真要迁移，成本只在驱动和迁移脚本上。例外只有三类，且都集中在 `internal/library/query.go` 和迁移里：`COLLATE NOCASE`（换 `citext` 或 `lower()` 索引）、标签的 `json_each`（换 `jsonb_array_elements_text`）、运维语句 `PRAGMA optimize` 与 `VACUUM INTO`。
 - 出现以下任一情况时，重新评估是否上 PostgreSQL：多个进程同时写库；数据库文件放在网络文件系统上；持续出现 `SQLITE_BUSY`。

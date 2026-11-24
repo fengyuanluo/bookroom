@@ -14,5 +14,5 @@
 - Readest 升级时如果改了契约，需要跟进；用 `readest-sync-api.json` 写契约测试来发现漂移。
 - `/api/sync/replicas` 承载客户端配置同步：设置、字体、主题纹理、词典、自定义 TTS 和翻译器、OPDS 书库列表、智能书架（`services/sync/adapters/*`），按 HLC 做字段级 LWW。服务端逻辑照 `libs/replicaSyncServer.ts` 和 `libs/crdt.ts` 移植；客户端配置只同步到 BookRoom（见 ADR 0010）。
 - 原生 KOSync 的进度和 `/api/sync` 写同一条书配置（`xpointer` 加 `progress`），Readest 打开书时会应用这个 xpointer。逻辑照 Readest 的 `app/api/crosspoint/syncs/progress/*` 移植，包括它的防回退规则：服务端还没有 xpointer 时，新设备上传的较小进度不能覆盖 Readest 已有的较大进度。
-- KOSync 协议把密码的 MD5 当作 `x-auth-key` 发送。服务端不存用户密码的 MD5，而是像 Readest 的 CrossPoint 那样，给每台设备签发一个同步密钥填在 KOSync 密码处：密钥本身就能识别用户，用户名只作显示，可单独吊销。注册接口关闭，账号由 BookRoom 管理。
+- KOSync 协议把密码的 MD5 当作 `x-auth-key` 发送。服务端不存用户密码的 MD5，而是像 Readest 的 CrossPoint 那样，给每台设备签发一个设备密钥填在 KOSync 密码处（OPDS 的 Basic 认证同样接受）：密钥本身就能识别用户，用户名只作显示，可单独吊销。注册接口关闭，账号由 BookRoom 管理。
 - CrossPoint 默认按文件名匹配书，要改成 Binary（partialMD5）模式才能对上书哈希；它的 OPDS 客户端只认 `application/epub+zip`。
