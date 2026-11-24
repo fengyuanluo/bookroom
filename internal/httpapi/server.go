@@ -108,6 +108,8 @@ func toGinPath(p string) string {
 func (s *Server) Handler() http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	// readest.koplugin joins "<supabase_url>/auth/v1/" with "/token", producing "//token".
+	r.RemoveExtraSlash = true
 	r.Use(s.recovery, requestid.New(), sloggin.NewWithConfig(s.Log, sloggin.Config{
 		WithRequestID: true, DefaultLevel: slog.LevelInfo, ClientErrorLevel: slog.LevelWarn, ServerErrorLevel: slog.LevelError,
 		Filters: []sloggin.Filter{sloggin.IgnorePath("/healthz")},

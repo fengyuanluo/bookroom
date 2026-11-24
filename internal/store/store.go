@@ -63,6 +63,12 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
+// Backup writes a consistent copy of the database to path (VACUUM INTO), safe while the server runs.
+func (s *Store) Backup(ctx context.Context, path string) error {
+	_, err := s.W.ExecContext(ctx, "VACUUM INTO ?", path)
+	return err
+}
+
 // Optimize refreshes planner statistics that went stale (run periodically and after bulk imports).
 func (s *Store) Optimize(ctx context.Context) error {
 	_, err := s.W.ExecContext(ctx, "PRAGMA optimize")

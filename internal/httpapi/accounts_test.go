@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -117,7 +118,7 @@ func TestWebnovelTXTAutoFill(t *testing.T) {
 		}
 	}))
 	defer works.Close()
-	e := newEnv(t, envOptions{providers: []scrape.Provider{scrape.NewXiaoshuohub(works.URL, "", "")}})
+	e := newEnv(t, envOptions{providers: []scrape.Provider{scrape.NewXiaoshuohub(true, works.URL, "", "")}})
 	p := testutil.WriteFile(t, t.TempDir(), "《凡人修仙传》作者：忘语.txt", []byte("第一章 山边小村\n\n二愣子睁大着双眼。\n"))
 	var b book
 	e.expect(e.upload(e.admin, p), 201, &b)
@@ -236,4 +237,49 @@ func TestListPaging(t *testing.T) {
 	require.NotNil(t, page.NextCursor)
 	e.expect(e.call("GET", "/api/v1/books?limit=2&sort=added&cursor="+url.QueryEscape(*page.NextCursor), e.admin, nil), 400, nil)
 	e.expect(e.call("GET", "/api/v1/books?cursor=%25%25", e.admin, nil), 400, nil)
+}
+
+func TestUnreachableSourcePausesInsteadOfGivingUp(t *testing.T) {
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close() // connection refused from now on
+	e := newEnv(t, envOptions{providers: []scrape.Provider{scrape.NewXiaoshuohub(true, deadURL, "", "")}})
+	var b1, b2 book
+	e.expect(e.upload(e.admin, testutil.WriteFile(t, t.TempDir(), "《甲》作者：某.txt", []byte("一"))), 201, &b1)
+
+	var providers struct {
+		Items []struct {
+			ID          string     `json:"id"`
+			PausedUntil *time.Time `json:"pausedUntil"`
+		}
+	}
+	require.Eventually(t, func() bool {
+		e.expect(e.call("GET", "/api/v1/metadata/providers", e.admin, nil), 200, &providers)
+		return providers.Items[0].PausedUntil != nil
+	}, 5*time.Second, 20*time.Millisecond)
+	assert.WithinDuration(t, time.Now().Add(10*time.Minute), *providers.Items[0].PausedUntil, time.Minute)
+
+	// A book queued while the source is paused waits for it rather than being marked no_match.
+	e.expect(e.upload(e.admin, testutil.WriteFile(t, t.TempDir(), "《乙》作者：某.txt", []byte("二"))), 201, &b2)
+	ctx := context.Background()
+	require.Eventually(t, func() bool {
+		job, err := e.deps.Store.Q.GetScrapeJob(ctx, b2.Hash)
+		return err == nil && job.NextRunAt > time.Now().Add(5*time.Minute).UnixMilli()
+	}, 5*time.Second, 20*time.Millisecond)
+	for _, h := range []string{b1.Hash, b2.Hash} {
+		job, err := e.deps.Store.Q.GetScrapeJob(ctx, h)
+		require.NoError(t, err)
+		assert.Equal(t, "pending", job.Status)
+		assert.Zero(t, job.Attempts, "a pause does not burn retry attempts")
+	}
+
+	var cands struct {
+		Errors []struct {
+			Provider string     `json:"provider"`
+			RetryAt  *time.Time `json:"retryAt"`
+		}
+	}
+	e.expect(e.call("POST", "/api/v1/books/"+b1.Hash+"/metadata/search", e.admin, map[string]any{}), 200, &cands)
+	require.Len(t, cands.Errors, 1)
+	assert.NotNil(t, cands.Errors[0].RetryAt, "manual search explains the paused source")
 }

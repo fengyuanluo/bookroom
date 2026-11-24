@@ -24,6 +24,7 @@ var stripTags = library.StripHTML
 // Xiaoshuohub queries the xiaoshuohub developer API (web novels only: no ISBN). Without app credentials it
 // runs anonymously (200 calls/day per IP); with them 1000 calls per rolling 24 h.
 type Xiaoshuohub struct {
+	On     bool
 	Base   string
 	Key    string
 	Secret string
@@ -37,8 +38,8 @@ type Xiaoshuohub struct {
 // lowWater pauses the source before the server starts answering 429.
 const xshLowWater = 20
 
-func NewXiaoshuohub(base, key, secret string) *Xiaoshuohub {
-	x := &Xiaoshuohub{Base: strings.TrimRight(base, "/"), Key: key, Secret: secret, c: newClient("xiaoshuohub", 2, "")}
+func NewXiaoshuohub(enabled bool, base, key, secret string) *Xiaoshuohub {
+	x := &Xiaoshuohub{On: enabled, Base: strings.TrimRight(base, "/"), Key: key, Secret: secret, c: newClient("xiaoshuohub", 2, "")}
 	x.c.quota = func(r *http.Response) time.Time {
 		if rem, err := strconv.Atoi(r.Header.Get("Ratelimit-Remaining")); err == nil && rem < xshLowWater {
 			// The window rolls over 24 h; an hour later enough calls have aged out to continue slowly.
@@ -53,6 +54,9 @@ func (x *Xiaoshuohub) ID() string             { return "xiaoshuohub" }
 func (x *Xiaoshuohub) Name() string           { return "小说汇 xiaoshuohub" }
 func (x *Xiaoshuohub) WorkType() api.WorkType { return api.WorkTypeWebnovel }
 func (x *Xiaoshuohub) Enabled() (bool, string) {
+	if !x.On {
+		return false, "disabled by BOOKROOM_XIAOSHUOHUB_ENABLED"
+	}
 	if x.Base == "" {
 		return false, "set BOOKROOM_XIAOSHUOHUB_URL"
 	}

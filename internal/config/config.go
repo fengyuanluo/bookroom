@@ -44,6 +44,7 @@ type Config struct {
 	OpenLibraryEnable bool          `env:"OPENLIBRARY_ENABLED" envDefault:"true"`
 	OpenLibraryUA     string        `env:"OPENLIBRARY_CONTACT"` // contact e-mail raises Open Library's limit to 3 req/s
 	DoubanEnable      bool          `env:"DOUBAN_ENABLED"`
+	XSHEnable         bool          `env:"XIAOSHUOHUB_ENABLED" envDefault:"true"`
 	XSHBaseURL        string        `env:"XIAOSHUOHUB_URL" envDefault:"https://api.xiaoshuohub.com"`
 	XSHAppKey         string        `env:"XIAOSHUOHUB_APP_KEY"`
 	XSHAppSecret      string        `env:"XIAOSHUOHUB_APP_SECRET"`

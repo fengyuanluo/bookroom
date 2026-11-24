@@ -54,18 +54,12 @@ func (s *Service) pausedUntil(ctx context.Context, id string) time.Time {
 	return time.UnixMilli(st.PausedUntil)
 }
 
-func (s *Service) pause(ctx context.Context, q *QuotaError) {
+func (s *Service) pause(ctx context.Context, q *PauseError) {
 	if err := s.st.WQ.SetProviderPausedUntil(ctx, db.SetProviderPausedUntilParams{
 		Provider: q.Provider, PausedUntil: q.RetryAt.UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		s.log.Warn("scrape: persist pause", "provider", q.Provider, "err", err)
 	}
-}
-
-// usable reports whether a source can be queried now.
-func (s *Service) usable(ctx context.Context, p Provider) bool {
-	ok, _ := p.Enabled()
-	return ok && time.Now().After(s.pausedUntil(ctx, p.ID()))
 }
 
 // Providers lists every source with its state.
@@ -111,7 +105,11 @@ func (s *Service) Search(ctx context.Context, hash string, mq api.MetadataQuery)
 		if mq.Provider != nil && *mq.Provider != "" && p.ID() != *mq.Provider {
 			continue
 		}
-		if !s.usable(ctx, p) {
+		if ok, _ := p.Enabled(); !ok {
+			continue
+		}
+		if until := s.pausedUntil(ctx, p.ID()); time.Now().Before(until) {
+			res.Errors = append(res.Errors, api.ProviderError{Provider: p.ID(), Message: "paused until the quota window rolls over or the source answers again", RetryAt: &until})
 			continue
 		}
 		pq := q
@@ -140,7 +138,7 @@ func (s *Service) Search(ctx context.Context, hash string, mq api.MetadataQuery)
 
 func providerError(ctx context.Context, s *Service, id string, err error) api.ProviderError {
 	pe := api.ProviderError{Provider: id, Message: err.Error()}
-	var qe *QuotaError
+	var qe *PauseError
 	if errors.As(err, &qe) {
 		s.pause(ctx, qe)
 		pe.RetryAt = &qe.RetryAt
@@ -165,7 +163,7 @@ func (s *Service) Apply(ctx context.Context, userID, hash string, req api.ApplyM
 		return api.Book{}, apperr.NotFound("the source has no record " + req.ProviderId)
 	}
 	if err != nil {
-		var qe *QuotaError
+		var qe *PauseError
 		if errors.As(err, &qe) {
 			s.pause(ctx, qe)
 		}
@@ -266,7 +264,7 @@ func (s *Service) process(ctx context.Context, job db.ScrapeJob) {
 	status, err := s.autoFill(ctx, job.Hash)
 	now := time.Now()
 	upd := db.UpdateScrapeJobParams{Hash: job.Hash, Status: status, Attempts: job.Attempts, NextRunAt: job.NextRunAt, UpdatedAt: now.UnixMilli()}
-	var qe *QuotaError
+	var qe *PauseError
 	switch {
 	case errors.As(err, &qe):
 		upd.Status, upd.NextRunAt = string(api.Pending), qe.RetryAt.UnixMilli()
@@ -299,9 +297,14 @@ func (s *Service) autoFill(ctx context.Context, hash string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var quota error
+	var paused *PauseError // the earliest pause among relevant sources; the job waits for it
+	wait := func(pe *PauseError) {
+		if paused == nil || pe.RetryAt.Before(paused.RetryAt) {
+			paused = pe
+		}
+	}
 	for _, p := range s.providers {
-		if !s.usable(ctx, p) {
+		if ok, _ := p.Enabled(); !ok {
 			continue
 		}
 		var q Query
@@ -314,44 +317,57 @@ func (s *Service) autoFill(ctx context.Context, hash string) (string, error) {
 		default:
 			continue
 		}
-		cands, err := p.Search(ctx, q)
-		if err != nil {
-			var qe *QuotaError
-			if errors.As(err, &qe) {
-				s.pause(ctx, qe)
-				quota = err
-				continue
-			}
-			return "", err
+		if until := s.pausedUntil(ctx, p.ID()); time.Now().Before(until) {
+			wait(&PauseError{Provider: p.ID(), RetryAt: until})
+			continue
 		}
-		for i := range cands {
-			c := &cands[i]
-			if !exactMatch(c, q, webnovel) {
-				continue
-			}
-			full, err := p.Get(ctx, c.ProviderID)
-			if err != nil {
-				return "", err
-			}
-			if !exactMatch(&full, q, webnovel) && !webnovel {
-				full.ISBN = q.ISBN // the edition lookup may omit the ISBN it was found by
-			}
-			if !hasCover && full.CoverURL != "" {
-				full.Cover, full.CoverExt = s.fetchCover(ctx, full.CoverURL)
-			}
-			if full.WorkType == "" {
-				full.WorkType = p.WorkType()
-			}
-			if _, err := s.lib.ApplyMetadata(ctx, hash, &full.Metadata, nil, false, p.ID()+":"+full.ProviderID); err != nil {
-				return "", err
-			}
+		done, err := s.fillFrom(ctx, p, hash, q, webnovel, hasCover)
+		var pe *PauseError
+		switch {
+		case errors.As(err, &pe):
+			s.pause(ctx, pe)
+			wait(pe)
+		case err != nil:
+			return "", err
+		case done:
 			return string(api.Done), nil
 		}
 	}
-	if quota != nil {
-		return "", quota
+	if paused != nil {
+		return "", paused
 	}
 	return string(api.NoMatch), nil
+}
+
+// fillFrom asks one source and applies its first exact match; done reports whether something matched.
+func (s *Service) fillFrom(ctx context.Context, p Provider, hash string, q Query, webnovel, hasCover bool) (bool, error) {
+	cands, err := p.Search(ctx, q)
+	if err != nil {
+		return false, err
+	}
+	for i := range cands {
+		if !exactMatch(&cands[i], q, webnovel) {
+			continue
+		}
+		full, err := p.Get(ctx, cands[i].ProviderID)
+		if err != nil {
+			return false, err
+		}
+		if !webnovel && full.ISBN == "" {
+			full.ISBN = q.ISBN // an edition lookup may omit the ISBN it was found by
+		}
+		if !hasCover && full.CoverURL != "" {
+			full.Cover, full.CoverExt = s.fetchCover(ctx, full.CoverURL)
+		}
+		if full.WorkType == "" {
+			full.WorkType = p.WorkType()
+		}
+		if _, err := s.lib.ApplyMetadata(ctx, hash, &full.Metadata, nil, false, p.ID()+":"+full.ProviderID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func exactMatch(c *Candidate, q Query, webnovel bool) bool {

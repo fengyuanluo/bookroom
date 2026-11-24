@@ -49,15 +49,24 @@ type Provider interface {
 	Get(ctx context.Context, id string) (Candidate, error)
 }
 
-// QuotaError means the source's quota is spent until RetryAt.
-type QuotaError struct {
+// PauseError means the source cannot be used until RetryAt: its quota is spent, or it is unreachable.
+type PauseError struct {
 	Provider string
 	RetryAt  time.Time
+	Reason   string
 }
 
-func (e *QuotaError) Error() string {
-	return fmt.Sprintf("%s: quota exhausted until %s", e.Provider, e.RetryAt.Format(time.RFC3339))
+func (e *PauseError) Error() string {
+	reason := e.Reason
+	if reason == "" {
+		reason = "quota exhausted"
+	}
+	return fmt.Sprintf("%s: %s until %s", e.Provider, reason, e.RetryAt.Format(time.RFC3339))
 }
+
+// unreachablePause is how long a source that does not answer is left alone, so a dead host does not stall
+// the queue on connection timeouts.
+const unreachablePause = 10 * time.Minute
 
 // ErrNotFound means the source has no such record.
 var ErrNotFound = errors.New("scrape: record not found")
@@ -69,7 +78,7 @@ type client struct {
 	limiter *rate.Limiter
 	ua      string
 	// quota inspects every successful response and returns when the source should next be called; the
-	// response itself is still used, later calls fail fast with a QuotaError until then.
+	// response itself is still used, later calls fail fast with a PauseError until then.
 	quota func(*http.Response) time.Time
 
 	mu    sync.Mutex
@@ -88,7 +97,7 @@ func (c *client) do(ctx context.Context, req *http.Request) (*http.Response, err
 	until := c.until
 	c.mu.Unlock()
 	if time.Now().Before(until) {
-		return nil, &QuotaError{Provider: c.id, RetryAt: until}
+		return nil, &PauseError{Provider: c.id, RetryAt: until}
 	}
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, err
@@ -98,11 +107,18 @@ func (c *client) do(ctx context.Context, req *http.Request) (*http.Response, err
 	}
 	resp, err := c.http.Do(req.WithContext(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", c.id, err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		until := time.Now().Add(unreachablePause)
+		c.mu.Lock()
+		c.until = until
+		c.mu.Unlock()
+		return nil, &PauseError{Provider: c.id, RetryAt: until, Reason: "unreachable (" + err.Error() + ")"}
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		resp.Body.Close()
-		return nil, &QuotaError{Provider: c.id, RetryAt: time.Now().Add(retryAfter(resp.Header.Get("Retry-After"), time.Hour))}
+		return nil, &PauseError{Provider: c.id, RetryAt: time.Now().Add(retryAfter(resp.Header.Get("Retry-After"), time.Hour))}
 	}
 	if c.quota != nil && resp.StatusCode < 300 {
 		if t := c.quota(resp); !t.IsZero() {

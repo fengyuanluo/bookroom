@@ -116,7 +116,7 @@ func TestXiaoshuohubTokenSearchAndQuota(t *testing.T) {
 	remaining, calls := 500, 0
 	srv := xshServer(t, &remaining, &calls)
 	defer srv.Close()
-	x := NewXiaoshuohub(srv.URL, "app", "secret")
+	x := NewXiaoshuohub(true, srv.URL, "app", "secret")
 	ctx := context.Background()
 	cands, err := x.Search(ctx, Query{Title: "凡人修仙传", Author: "忘语"})
 	require.NoError(t, err)
@@ -139,14 +139,14 @@ func TestXiaoshuohubTokenSearchAndQuota(t *testing.T) {
 	require.NoError(t, err)
 	before := calls
 	_, err = x.Get(ctx, "549460")
-	var qe *QuotaError
+	var qe *PauseError
 	require.ErrorAs(t, err, &qe)
 	assert.Equal(t, before, calls, "no request was sent")
 	_, err = x.Get(ctx, "abc")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
-func TestTooManyRequestsBecomesQuotaError(t *testing.T) {
+func TestTooManyRequestsBecomesPauseError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "120")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -155,7 +155,7 @@ func TestTooManyRequestsBecomesQuotaError(t *testing.T) {
 	ol := NewOpenLibrary(true, "")
 	ol.Base = srv.URL
 	_, err := ol.Search(context.Background(), Query{ISBN: "9780765382030"})
-	var qe *QuotaError
+	var qe *PauseError
 	require.True(t, errors.As(err, &qe))
 	assert.Equal(t, "openlibrary", qe.Provider)
 }

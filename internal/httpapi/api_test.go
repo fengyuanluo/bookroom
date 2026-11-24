@@ -73,6 +73,8 @@ func TestAuthFlow(t *testing.T) {
 	}
 	e.expect(e.call("POST", "/auth/v1/token?grant_type=password", "", map[string]string{"email": "admin@example.com", "password": "adminpass"}), 200, &sess)
 	e.expect(e.call("GET", "/auth/v1/user", sess.AccessToken, nil), 200, nil)
+	// The plugin's URL join yields a double slash.
+	e.expect(e.call("POST", "/auth/v1//token?grant_type=refresh_token", "", map[string]string{"refresh_token": "nope"}), 401, nil)
 	e.expect(e.call("POST", "/auth/v1/token?grant_type=password", "", map[string]string{"email": "admin", "password": "x"}), 400, nil)
 }
 
@@ -145,6 +147,9 @@ func TestLibraryLifecycle(t *testing.T) {
 
 	_, alice := e.user("alice")
 	e.expect(e.call("DELETE", "/api/v1/books/"+b.Hash, alice, nil), 403, nil)
+	e.expect(e.call("PATCH", "/api/v1/books/"+b.Hash, alice, map[string]any{"title": "x"}), 403, nil) // shared metadata: admins only
+	e.expect(e.call("PUT", "/api/v1/books/"+b.Hash+"/metadata/locks", alice, map[string]any{"fields": []string{}}), 403, nil)
+	e.expect(e.call("PUT", "/api/v1/books/"+b.Hash+"/state", alice, map[string]any{"readingStatus": "reading"}), 200, nil)
 	e.expect(e.call("DELETE", "/api/v1/books/"+b.Hash, e.admin, nil), 204, nil)
 	e.expect(e.call("GET", "/api/v1/books/"+b.Hash, e.admin, nil), 404, nil)
 }

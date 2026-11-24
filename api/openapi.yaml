@@ -382,6 +382,8 @@ paths:
       tags: [books]
       operationId: updateBookMetadata
       summary: Edit library metadata
+      security:
+        - bearerAuth: [admin]
       description: |
         Every field present in the body is written and **locked**: the scraper never overwrites it again
         (see `PUT /api/v1/books/{hash}/metadata/locks`). The change propagates to every user's Readest library.
@@ -398,6 +400,7 @@ paths:
               schema: {$ref: '#/components/schemas/Book'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
     delete:
       tags: [books]
@@ -480,6 +483,8 @@ paths:
       tags: [metadata]
       operationId: setMetadataLocks
       summary: Replace the set of locked metadata fields
+      security:
+        - bearerAuth: [admin]
       description: Send an empty list to let the scraper fill every field again.
       requestBody:
         required: true
@@ -494,6 +499,7 @@ paths:
               schema: {$ref: '#/components/schemas/Book'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
   /api/v1/books/{hash}/metadata/search:
     parameters:
@@ -525,6 +531,8 @@ paths:
       tags: [metadata]
       operationId: applyBookMetadata
       summary: Apply a candidate to the book
+      security:
+        - bearerAuth: [admin]
       description: Writes the chosen fields (default every non-empty field of the candidate) and locks them, because choosing a candidate is a user edit.
       requestBody:
         required: true
@@ -539,6 +547,7 @@ paths:
               schema: {$ref: '#/components/schemas/Book'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '502': {$ref: '#/components/responses/Upstream'}
   /api/v1/books/{hash}/metadata/refresh:
@@ -1845,7 +1854,7 @@ components:
       properties:
         provider: {type: string}
         message: {type: string}
-        retryAt: {type: string, format: date-time, description: Set when the source's quota is exhausted.}
+        retryAt: {type: string, format: date-time, description: 'Set while the source is paused (quota exhausted, or the host did not answer).'}
     ApplyMetadataRequest:
       type: object
       required: [provider, providerId]

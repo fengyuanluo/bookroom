@@ -5,6 +5,7 @@
 //	bookroom user add [-admin] [-email E] NAME     create an account (password from BOOKROOM_PASSWORD or stdin)
 //	bookroom user passwd NAME                      set a password
 //	bookroom user list                             list accounts
+//	bookroom backup FILE                           copy the database while the server runs
 //	bookroom version
 package main
 
@@ -74,6 +75,15 @@ func run(args []string) error {
 		return app.importCmd(ctx, args)
 	case "user":
 		return app.userCmd(ctx, args)
+	case "backup":
+		if len(args) != 1 {
+			return errors.New("backup: give the target FILE (it must not exist)")
+		}
+		if err := app.store.Backup(ctx, args[0]); err != nil {
+			return fmt.Errorf("backup: %w", err)
+		}
+		fmt.Println("database copied to", args[0], "- also back up the library, covers and objects directories")
+		return nil
 	}
 	return fmt.Errorf("unknown command %q\n%s", cmd, usage)
 }
@@ -84,6 +94,7 @@ const usage = `usage:
   bookroom user add [-admin] [-email ADDR] NAME     (password: $BOOKROOM_PASSWORD or stdin)
   bookroom user passwd NAME                         (password: $BOOKROOM_PASSWORD or stdin)
   bookroom user list
+  bookroom backup FILE
   bookroom version
 Configuration comes from BOOKROOM_* environment variables (docs/operations.md).`
 
@@ -138,7 +149,7 @@ func open(ctx context.Context) (*app, error) {
 		scrape.NewOpenLibrary(cfg.OpenLibraryEnable, cfg.OpenLibraryUA),
 		scrape.NewHardcover(cfg.HardcoverToken),
 		scrape.NewDouban(cfg.DoubanEnable),
-		scrape.NewXiaoshuohub(cfg.XSHBaseURL, cfg.XSHAppKey, cfg.XSHAppSecret),
+		scrape.NewXiaoshuohub(cfg.XSHEnable, cfg.XSHBaseURL, cfg.XSHAppKey, cfg.XSHAppSecret),
 	)
 	lib.OnScrapeQueued = a.scrape.Wake
 	return a, nil
