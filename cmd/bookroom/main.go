@@ -166,7 +166,8 @@ func (a *app) serve(ctx context.Context) error {
 	}
 	srv, err := httpapi.New(httpapi.Deps{
 		Cfg: a.cfg, Store: a.store, Auth: a.auth, Lib: a.lib, Sync: readest.NewSync(a.store), Storage: a.storage,
-		Replicas: readest.NewReplicas(a.store), Kosync: kosync.New(a.store), OPDS: &opds.Catalog{Lib: a.lib},
+		Replicas: readest.NewReplicas(a.store), Vocabulary: readest.NewVocabulary(a.store),
+		Kosync: kosync.New(a.store), OPDS: &opds.Catalog{Lib: a.lib},
 		Stats: stats.New(a.store), Scrape: a.scrape, Proxy: proxy.New(a.cfg.ProxyAllowPrivate, a.cfg.ProxyTrustedHosts),
 		Log: a.log, Version: version,
 	})

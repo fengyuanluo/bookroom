@@ -177,6 +177,8 @@ curl -s 'localhost:8080/api/v1/stats/books?limit=10' -H "$H"
 | GET | `/api/sync/replica-keys` | `readestListReplicaKeys` | bearerAuth | List the user's encryption salts |
 | POST | `/api/sync/replica-keys` | `readestCreateReplicaKey` | bearerAuth | Create an encryption salt |
 | DELETE | `/api/sync/replica-keys` | `readestForgetReplicaKeys` | bearerAuth | Forget every salt and the encrypted fields that depend on them |
+| GET | `/api/sync/vocabulary` | `readestPullVocabulary` | bearerAuth | Pull vocabulary words changed after a keyset cursor |
+| POST | `/api/sync/vocabulary` | `readestPushVocabulary` | bearerAuth | Push vocabulary words and get the merged rows back |
 
 ### readest-storage
 

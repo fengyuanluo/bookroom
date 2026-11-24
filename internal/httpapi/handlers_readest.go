@@ -86,6 +86,22 @@ func (s *Server) ReadestForgetReplicaKeys(ctx context.Context, _ api.ReadestForg
 	return api.ReadestForgetReplicaKeys200JSONResponse{Ok: true}, nil
 }
 
+func (s *Server) ReadestPullVocabulary(ctx context.Context, r api.ReadestPullVocabularyRequestObject) (api.ReadestPullVocabularyResponseObject, error) {
+	rows, err := s.Vocabulary.Pull(rc(ctx), currentUser(ctx).ID, r.Params)
+	if err != nil {
+		return nil, err
+	}
+	return api.ReadestPullVocabulary200JSONResponse{Rows: rows}, nil
+}
+
+func (s *Server) ReadestPushVocabulary(ctx context.Context, r api.ReadestPushVocabularyRequestObject) (api.ReadestPushVocabularyResponseObject, error) {
+	res, err := s.Vocabulary.Push(rc(ctx), currentUser(ctx).ID, *r.Body)
+	if err != nil {
+		return nil, err
+	}
+	return api.ReadestPushVocabulary200JSONResponse(res), nil
+}
+
 func (s *Server) StorageUploadUrl(ctx context.Context, r api.StorageUploadUrlRequestObject) (api.StorageUploadUrlResponseObject, error) {
 	res, err := s.Storage.UploadURL(rc(ctx), currentUser(ctx), *r.Body, s.baseURL(ctx))
 	if err != nil {

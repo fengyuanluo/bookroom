@@ -1,6 +1,6 @@
 # 服务端兼容 Readest 云契约，不自定义同步协议
 
-服务端是 Readest 云的自托管替身加一个共享书库：实现 Readest 现有的 `/api/sync`（books、notes、configs、statBooks、statPages）、`/api/sync/replicas`（客户端配置与智能书架）与 `/api/storage`（upload、download、list、delete）线格式，外加 OPDS 1.2 和原生 KOSync。Readest 已经有文件夹首屏、书籍详情、按需下载、缓存清理；KOReader 通过 `readest.koplugin` 走同一套端点（`apps/readest.koplugin/readest-sync-api.json`）。兼容这套契约后，客户端数据层不用改，KOReader 的进度、批注、统计同步也能直接用。没装插件的 KOReader 和 CrossPoint 这类自带 KOSync 客户端的设备，用原生 KOSync 同步进度。
+服务端是 Readest 云的自托管替身加一个共享书库：实现 Readest 现有的 `/api/sync`（books、notes、configs、statBooks、statPages）、`/api/sync/replicas`（客户端配置与智能书架）、`/api/sync/vocabulary`（生词本）与 `/api/storage`（upload、download、list、delete）线格式，外加 OPDS 1.2 和原生 KOSync。Readest 已经有文件夹首屏、书籍详情、按需下载、缓存清理；KOReader 通过 `readest.koplugin` 走同一套端点（`apps/readest.koplugin/readest-sync-api.json`）。兼容这套契约后，客户端数据层不用改，KOReader 的进度、批注、统计同步也能直接用。没装插件的 KOReader 和 CrossPoint 这类自带 KOSync 客户端的设备，用原生 KOSync 同步进度。
 
 ## 考虑过的方案
 

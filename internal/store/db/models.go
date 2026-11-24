@@ -210,3 +210,18 @@ type User struct {
 	CreatedAt    int64
 	UpdatedAt    int64
 }
+
+type Vocabulary struct {
+	UserID      string
+	ID          string
+	Lang        string
+	WordKey     string
+	Word        string
+	State       string
+	Hint        *string
+	Occurrences string
+	CreatedAt   int64
+	ModifiedAt  int64
+	DeletedAt   *int64
+	UpdatedAt   int64
+}

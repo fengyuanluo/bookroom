@@ -524,6 +524,75 @@ func TestReplicaSync(t *testing.T) {
 	assert.Empty(t, keys.Rows)
 }
 
+func TestVocabularySync(t *testing.T) {
+	e := newEnv(t)
+	type row struct {
+		ID          string           `json:"id"`
+		State       string           `json:"state"`
+		Hint        *string          `json:"hint"`
+		Occurrences []map[string]any `json:"occurrences"`
+		CreatedAt   int64            `json:"created_at"`
+		ModifiedAt  int64            `json:"modified_at"`
+		DeletedAt   *int64           `json:"deleted_at"`
+		UpdatedAt   string           `json:"updated_at"`
+	}
+	var res struct {
+		Rows     []row
+		Rejected []string
+	}
+	word := func(key, state string, modified int64, sentences ...string) map[string]any {
+		occ := []map[string]any{}
+		for i, s := range sentences {
+			occ = append(occ, map[string]any{"sentence": s, "bookHash": "b1", "at": modified + int64(i)})
+		}
+		return map[string]any{"id": "en:" + key, "lang": "en", "word_key": key, "word": key, "state": state,
+			"hint": nil, "occurrences": occ, "created_at": modified, "modified_at": modified, "deleted_at": nil}
+	}
+
+	bad := word("broken", "none", 1)
+	bad["id"] = "en:other"
+	e.expect(e.call("POST", "/api/sync/vocabulary", e.admin,
+		map[string]any{"rows": []any{word("serendipity", "learning", 100, "first"), bad}}), 200, &res)
+	require.Len(t, res.Rows, 1)
+	assert.Equal(t, []string{"en:other"}, res.Rejected, "a malformed row is reported, not fatal")
+
+	// An older edit from another device loses the state but contributes its sentence.
+	e.expect(e.call("POST", "/api/sync/vocabulary", e.admin,
+		map[string]any{"rows": []any{word("serendipity", "mastered", 50, "second")}}), 200, &res)
+	require.Len(t, res.Rows, 1)
+	assert.Equal(t, "learning", res.Rows[0].State)
+	assert.Equal(t, int64(50), res.Rows[0].CreatedAt)
+	assert.Len(t, res.Rows[0].Occurrences, 2)
+	assert.Equal(t, "first", res.Rows[0].Occurrences[0]["sentence"], "newest sentence first")
+
+	// A newer delete drops the sentences from before it.
+	gone := word("serendipity", "learning", 200)
+	gone["deleted_at"] = 200
+	e.expect(e.call("POST", "/api/sync/vocabulary", e.admin, map[string]any{"rows": []any{gone}}), 200, &res)
+	require.NotNil(t, res.Rows[0].DeletedAt)
+	assert.Empty(t, res.Rows[0].Occurrences)
+
+	e.expect(e.call("POST", "/api/sync/vocabulary", e.admin,
+		map[string]any{"rows": []any{word("apple", "none", 300), word("banana", "none", 300)}}), 200, &res)
+
+	// Keyset paging: the last row's (updated_at, id) resumes exactly after it.
+	e.expect(e.call("GET", "/api/sync/vocabulary?limit=2", e.admin, nil), 200, &res)
+	require.Len(t, res.Rows, 2)
+	last := res.Rows[1]
+	q := url.Values{"limit": {"2"}, "since_ts": {last.UpdatedAt}, "since_id": {last.ID}}
+	e.expect(e.call("GET", "/api/sync/vocabulary?"+q.Encode(), e.admin, nil), 200, &res)
+	require.Len(t, res.Rows, 1)
+	assert.NotEqual(t, last.ID, res.Rows[0].ID)
+
+	e.expect(e.call("GET", "/api/sync/vocabulary?since_ts=yesterday", e.admin, nil), 400, nil)
+	tooMany := make([]any, 101)
+	for i := range tooMany {
+		tooMany[i] = word(fmt.Sprintf("w%d", i), "none", 1)
+	}
+	e.expect(e.call("POST", "/api/sync/vocabulary", e.admin, map[string]any{"rows": tooMany}), 413, nil)
+	e.expect(e.call("GET", "/api/sync/vocabulary", "", nil), 401, nil)
+}
+
 func TestProxySSRFAndPassthrough(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/redirect" {

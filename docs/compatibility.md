@@ -12,6 +12,7 @@ BookRoom 实现了四个外部契约。本文写清每个契约以哪个版本�
 | `POST /api/sync` | 完全兼容 | 书、配置、批注、`statBooks`、`statPages`；返回权威行 |
 | `GET/POST /api/sync/replicas` | 兼容 | 推送、单类拉取、`cursors` 批量拉取；错误码 `AUTH/VALIDATION/UNKNOWN_KIND/SCHEMA_TOO_NEW/CLOCK_SKEW/SERVER`；HLC 时钟偏差 ±60 s |
 | `GET/POST/DELETE /api/sync/replica-keys` | 兼容 | 仅 `pbkdf2-600k-sha256`；遗忘时同时删除依赖这些盐的加密字段 |
+| `GET/POST /api/sync/vocabulary` | 完全兼容 | 生词本：`since_ts`/`since_id` 键集分页（`updated_at` 服务端毫秒戳）；推送按 Readest `mergeEntries` 合并（`modified_at` 新者赢状态/提示/墓碑，例句并集，删除抹掉之前的例句）；格式错误的行跳过并在 `rejected` 里返回；每次最多 100 行 |
 | `POST /api/storage/upload` | 兼容 | 返回签名 PUT URL（`/api/storage/objects/<token>`，30 分钟） |
 | `GET/POST /api/storage/download` | 兼容 | 包括 Readest 对未编码 `&`、`+` 的容错，以及"按书哈希 + 扩展名"的回退匹配 |
 | `GET /api/storage/list`、`DELETE /api/storage/delete` | 兼容 | 见下文差异 |

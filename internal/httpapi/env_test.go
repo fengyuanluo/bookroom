@@ -76,7 +76,8 @@ func newEnv(t *testing.T, opts ...envOptions) *env {
 	}
 	deps := httpapi.Deps{
 		Cfg: cfg, Store: st, Auth: auth.New(st, cfg.JWTSecret, cfg.AccessTTL, cfg.RefreshTTL, library.ProjectInto), Lib: lib,
-		Sync: readest.NewSync(st), Storage: storage, Replicas: readest.NewReplicas(st), Kosync: kosync.New(st),
+		Sync: readest.NewSync(st), Storage: storage, Replicas: readest.NewReplicas(st),
+		Vocabulary: readest.NewVocabulary(st), Kosync: kosync.New(st),
 		OPDS: &opds.Catalog{Lib: lib}, Stats: stats.New(st), Scrape: sc, Proxy: px, Log: log, Version: "test",
 	}
 	srv, err := httpapi.New(deps)

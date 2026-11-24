@@ -803,6 +803,47 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/OkResponse'}
         '401': {$ref: '#/components/responses/ReplicaError'}
+  /api/sync/vocabulary:
+    get:
+      tags: [readest-sync]
+      operationId: readestPullVocabulary
+      summary: Pull vocabulary words changed after a keyset cursor
+      description: |
+        Readest v0.12.20 `GET /api/sync/vocabulary`. Rows are ordered by the server-stamped `updated_at`, then `id`;
+        pass the last row's pair back as `since_ts`/`since_id` for the next page.
+      parameters:
+        - {name: since_ts, in: query, schema: {type: string}, description: ISO-8601 `updated_at` of the last row seen.}
+        - {name: since_id, in: query, schema: {type: string}, description: '`id` of the last row seen.'}
+        - {name: limit, in: query, schema: {type: string}, description: 'Page size, at most 1000 (the default).'}
+      responses:
+        '200':
+          description: Changed words.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VocabularyPullResponse'}
+        '400': {$ref: '#/components/responses/ReadestError'}
+        '401': {$ref: '#/components/responses/ReadestError'}
+    post:
+      tags: [readest-sync]
+      operationId: readestPushVocabulary
+      summary: Push vocabulary words and get the merged rows back
+      description: |
+        Each row merges with the stored one: the newer `modified_at` wins state, hint and tombstone, sentences are
+        unioned (Readest's `mergeEntries`). Malformed rows are skipped and their ids returned in `rejected`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/VocabularyPushRequest'}
+      responses:
+        '200':
+          description: Merged rows.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VocabularyPushResponse'}
+        '400': {$ref: '#/components/responses/ReadestError'}
+        '401': {$ref: '#/components/responses/ReadestError'}
+        '413': {$ref: '#/components/responses/ReadestError'}
 
   # ───────────────────────── Readest storage ─────────────────────────
   /api/storage/upload:
@@ -2303,6 +2344,54 @@ components:
         results:
           type: array
           items: {$ref: '#/components/schemas/ReplicaPullResult'}
+    VocabularyRow:
+      type: object
+      description: One looked-up word. Times other than `updated_at` are the clients' epoch milliseconds.
+      required: [user_id, id, lang, word_key, word, state, hint, occurrences, created_at, modified_at, deleted_at, updated_at]
+      properties:
+        user_id: {type: string}
+        id: {type: string, description: '`<lang>:<word_key>`'}
+        lang: {type: string}
+        word_key: {type: string}
+        word: {type: string}
+        state: {type: string, enum: [none, learning, mastered]}
+        hint: {type: string, nullable: true}
+        occurrences:
+          type: array
+          description: Sentences the word was looked up in (`{sentence, at, bookHash?, bookTitle?, bookAuthor?, cfi?}`), newest first.
+          items:
+            x-go-type: json.RawMessage
+        created_at: {type: integer, format: int64}
+        modified_at: {type: integer, format: int64}
+        deleted_at: {type: integer, format: int64, nullable: true}
+        updated_at: {type: string, description: Server-stamped on every write; the pull cursor.}
+    VocabularyPullResponse:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items: {$ref: '#/components/schemas/VocabularyRow'}
+    VocabularyPushRequest:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          description: At most 100 rows shaped like `VocabularyRow` (without `user_id`/`updated_at`).
+          items:
+            x-go-type: json.RawMessage
+    VocabularyPushResponse:
+      type: object
+      required: [rows, rejected]
+      properties:
+        rows:
+          type: array
+          items: {$ref: '#/components/schemas/VocabularyRow'}
+        rejected:
+          type: array
+          description: Ids of the rows skipped as malformed.
+          items: {type: string}
     ReplicaError:
       type: object
       required: [error, code]
