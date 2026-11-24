@@ -54,8 +54,8 @@ var (
 	blankLineRe = regexp.MustCompile(`\n{3,}`)
 )
 
-// stripHTML turns an HTML fragment (EPUB descriptions, Google Books) into plain text with paragraph breaks.
-func stripHTML(s string) string {
+// StripHTML turns an HTML fragment (EPUB descriptions, Google Books) into plain text with paragraph breaks.
+func StripHTML(s string) string {
 	if !strings.Contains(s, "<") {
 		return strings.TrimSpace(html.UnescapeString(s))
 	}
@@ -85,8 +85,8 @@ func imageExt(nameOrType string) string {
 	return ""
 }
 
-// sniffImage detects an image type from its first bytes.
-func sniffImage(b []byte) string {
+// SniffImage detects an image type from its first bytes.
+func SniffImage(b []byte) string {
 	switch {
 	case bytes.HasPrefix(b, []byte{0xFF, 0xD8, 0xFF}):
 		return "jpg"

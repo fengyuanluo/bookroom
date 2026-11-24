@@ -43,7 +43,9 @@ func Unauthorized(detail string) *Error { return New(http.StatusUnauthorized, "u
 func Forbidden(detail string) *Error    { return New(http.StatusForbidden, "forbidden", detail) }
 func NotFound(detail string) *Error     { return New(http.StatusNotFound, "not-found", detail) }
 func Conflict(detail string) *Error     { return New(http.StatusConflict, "conflict", detail) }
-func TooLarge(detail string) *Error     { return New(http.StatusRequestEntityTooLarge, "too-large", detail) }
+func TooLarge(detail string) *Error {
+	return New(http.StatusRequestEntityTooLarge, "too-large", detail)
+}
 func Unsupported(detail string) *Error {
 	return New(http.StatusUnsupportedMediaType, "unsupported-format", detail)
 }

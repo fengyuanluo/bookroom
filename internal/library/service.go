@@ -32,6 +32,9 @@ type Service struct {
 	autoScrape bool
 
 	locks sync.Map // hash -> *sync.Mutex, serializes concurrent ingests of the same file
+
+	// OnScrapeQueued is called after an ingest queued a scrape job (the scraper's wake-up).
+	OnScrapeQueued func()
 }
 
 // New prepares the directory layout under dataDir.
@@ -129,7 +132,7 @@ func (s *Service) ingest(ctx context.Context, src string, owned bool, name strin
 	defer unlock()
 
 	if _, err := s.st.Q.GetLibraryBook(ctx, hash); err == nil {
-		if opts.AddedBy != "" && opts.Shelf != "" {
+		if opts.AddedBy != "" && opts.Shelf != "" && ReadestCanOpen(string(format)) {
 			if err := s.setShelf(ctx, opts.AddedBy, hash, opts.Shelf); err != nil {
 				return api.Book{}, false, err
 			}
@@ -186,7 +189,7 @@ func (s *Service) ingest(ctx context.Context, src string, owned bool, name strin
 		}
 		row := projection(&lb, now)
 		for _, uid := range users {
-			if uid == opts.SkipProjection {
+			if uid == opts.SkipProjection || !ReadestCanOpen(lb.Format) {
 				continue
 			}
 			row.UserID = uid
@@ -194,7 +197,7 @@ func (s *Service) ingest(ctx context.Context, src string, owned bool, name strin
 				return err
 			}
 		}
-		if opts.AddedBy != "" && opts.Shelf != "" && opts.AddedBy != opts.SkipProjection {
+		if opts.AddedBy != "" && opts.Shelf != "" && opts.AddedBy != opts.SkipProjection && ReadestCanOpen(lb.Format) {
 			if _, err := setGroup(ctx, q, opts.AddedBy, hash, opts.Shelf, now); err != nil {
 				return err
 			}
@@ -210,6 +213,9 @@ func (s *Service) ingest(ctx context.Context, src string, owned bool, name strin
 			os.Remove(s.coverPath(&lb))
 		}
 		return api.Book{}, false, err
+	}
+	if s.autoScrape && s.OnScrapeQueued != nil {
+		s.OnScrapeQueued()
 	}
 	b, err := s.Get(ctx, opts.AddedBy, hash)
 	return b, true, err
@@ -373,7 +379,7 @@ func (s *Service) Delete(ctx context.Context, hash string) error {
 // SetCoverIfMissing adopts a cover image (e.g. the one a Readest client rendered for a PDF) when the book
 // has none. It reports whether the cover was taken.
 func (s *Service) SetCoverIfMissing(ctx context.Context, hash string, data []byte) (bool, error) {
-	ext := sniffImage(data)
+	ext := SniffImage(data)
 	if ext == "" || len(data) > maxCoverBytes {
 		return false, nil
 	}
@@ -393,6 +399,9 @@ func ProjectInto(ctx context.Context, q *db.Queries, userID string, now int64) e
 		return err
 	}
 	for i := range books {
+		if !ReadestCanOpen(books[i].Format) {
+			continue
+		}
 		row := projection(&books[i], now)
 		row.UserID = userID
 		if err := q.InsertBookIfAbsent(ctx, row); err != nil {
@@ -401,6 +410,11 @@ func ProjectInto(ctx context.Context, q *db.Queries, userID string, now int64) e
 	}
 	return nil
 }
+
+// ReadestCanOpen reports whether Readest reads the format. CBR is the only library format it cannot open
+// (no RAR support in foliate-js), so CBR books stay out of Readest libraries and have no per-user state;
+// KOReader and other OPDS readers get them from the catalog (docs/adr/0012-cbr-outside-readest.md).
+func ReadestCanOpen(format string) bool { return format != string(CBR) }
 
 // projection is the Readest books row a library book starts as in a user's library: uploaded (so Readest
 // offers the download), dated by when it entered the library.

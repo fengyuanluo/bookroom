@@ -62,7 +62,11 @@ CREATE TABLE library_books (
   created_at        INTEGER NOT NULL,
   updated_at        INTEGER NOT NULL
 );
-CREATE INDEX library_books_created ON library_books (created_at);
+-- Sort orders of the book list, with the hash as keyset tie-breaker.
+CREATE INDEX library_books_created ON library_books (created_at, hash);
+CREATE INDEX library_books_updated ON library_books (updated_at, hash);
+CREATE INDEX library_books_title ON library_books (title COLLATE NOCASE, hash);
+CREATE INDEX library_books_authors ON library_books (authors COLLATE NOCASE, hash);
 CREATE INDEX library_books_filename_md5 ON library_books (filename_md5);
 
 -- Readest `books`: one row per user and book hash. Library books are projected into every user's rows.
@@ -96,6 +100,10 @@ CREATE TABLE books (
 );
 CREATE INDEX books_synced ON books (user_id, synced_at);
 CREATE INDEX books_meta ON books (user_id, meta_hash);
+CREATE INDEX books_hash ON books (book_hash); -- library-wide updates: metadata propagation, tombstones
+CREATE INDEX books_group ON books (user_id, group_name, deleted_at, book_hash); -- covers shelf counts
+CREATE INDEX books_status ON books (user_id, reading_status);
+CREATE INDEX books_hidden ON books (user_id, book_hash) WHERE deleted_at IS NOT NULL;
 
 CREATE TABLE book_configs (
   user_id       TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,

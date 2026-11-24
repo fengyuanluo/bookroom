@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -71,110 +71,217 @@ type ListQuery struct {
 	Limit     int
 }
 
-// List returns one page of books visible to the user (books they deleted in Readest are hidden).
+// sortKey is one list order: its SQL expression and, for keyset paging, the row's value of it.
+type sortKey struct {
+	expr  string
+	value func(lb *db.LibraryBook) any // nil: offset paging only (the value lives on the user's row)
+}
+
+var sortKeys = map[string]sortKey{
+	"added":    {"l.created_at", func(lb *db.LibraryBook) any { return lb.CreatedAt }},
+	"updated":  {"l.updated_at", func(lb *db.LibraryBook) any { return lb.UpdatedAt }},
+	"title":    {"l.title COLLATE NOCASE", func(lb *db.LibraryBook) any { return lb.Title }},
+	"author":   {"l.authors COLLATE NOCASE", func(lb *db.LibraryBook) any { return lb.Authors }},
+	"lastRead": {"COALESCE(b.updated_at, 0)", nil},
+}
+
+// cursor is the decoded list cursor: an offset, or the sort value and hash of the last row returned.
+type cursor struct {
+	Offset int    `json:"o,omitempty"`
+	Sort   string `json:"s,omitempty"`
+	Desc   bool   `json:"d,omitempty"`
+	Num    *int64 `json:"n,omitempty"`
+	Str    string `json:"t,omitempty"`
+	Hash   string `json:"h,omitempty"`
+}
+
+func (c cursor) encode() string {
+	b, _ := json.Marshal(c)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// EncodeCursor is the opaque cursor of a list offset (OPDS pages).
+func EncodeCursor(offset int) string { return cursor{Offset: offset}.encode() }
+
+func decodeCursor(s string) (cursor, error) {
+	var c cursor
+	if s == "" {
+		return c, nil
+	}
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil || json.Unmarshal(b, &c) != nil || c.Offset < 0 {
+		return c, apperr.BadRequest("invalid cursor")
+	}
+	return c, nil
+}
+
+// filter is a WHERE fragment with its arguments.
+type filter struct {
+	where []string
+	args  []any
+}
+
+func (f *filter) add(cond string, args ...any) {
+	f.where = append(f.where, cond)
+	f.args = append(f.args, args...)
+}
+
+func (f *filter) and() string {
+	if len(f.where) == 0 {
+		return ""
+	}
+	return " AND " + strings.Join(f.where, " AND ")
+}
+
+// List returns one page of books visible to the user (books they deleted in Readest are hidden). Pages are
+// keyset-paged on the sort column, so deep pages cost the same as the first.
 func (s *Service) List(ctx context.Context, userID string, lq ListQuery) (api.BookPage, error) {
-	offset, err := decodeCursor(lq.Cursor)
+	cur, err := decodeCursor(lq.Cursor)
 	if err != nil {
 		return api.BookPage{}, err
 	}
 	if lq.Limit <= 0 || lq.Limit > 200 {
 		lq.Limit = 50
 	}
-	where := []string{"b.deleted_at IS NULL"}
-	args := []any{userID}
+	if _, ok := sortKeys[lq.Sort]; !ok {
+		lq.Sort = "added"
+	}
+	key := sortKeys[lq.Sort]
+	keyset := cur.Hash != ""
+	if keyset && (cur.Sort != lq.Sort || cur.Desc != lq.Desc || key.value == nil) {
+		return api.BookPage{}, apperr.BadRequest("cursor belongs to another sort order")
+	}
+
+	// Filters on library columns and on the user's row are kept apart: counting by library columns alone
+	// avoids joining every library book with the user's rows.
+	var lib, user filter
 	if q := strings.TrimSpace(lq.Q); q != "" {
 		like := "%" + escapeLike(q) + "%"
-		where = append(where, `(l.title LIKE ? ESCAPE '\' OR l.authors LIKE ? ESCAPE '\' OR l.series LIKE ? ESCAPE '\')`)
-		args = append(args, like, like, like)
-	}
-	if lq.Shelf != nil {
-		shelf := NormalizeShelf(*lq.Shelf)
-		switch {
-		case shelf == "":
-			where = append(where, "(b.group_name IS NULL OR b.group_name = '')")
-		case lq.Recursive:
-			where = append(where, "(b.group_name = ? OR substr(b.group_name, 1, ?) = ?)")
-			args = append(args, shelf, len([]rune(shelf))+1, shelf+"/")
-		default:
-			where = append(where, "b.group_name = ?")
-			args = append(args, shelf)
-		}
+		lib.add(`(l.title LIKE ? ESCAPE '\' OR l.authors LIKE ? ESCAPE '\' OR l.series LIKE ? ESCAPE '\')`, like, like, like)
 	}
 	if lq.Tag != "" {
-		where = append(where, "EXISTS (SELECT 1 FROM json_each(l.tags) WHERE value = ?)")
-		args = append(args, lq.Tag)
+		// instr on the JSON text is a cheap prefilter; json_each makes the match exact.
+		tagJSON, _ := json.Marshal(lq.Tag)
+		lib.add("instr(l.tags, ?) > 0 AND EXISTS (SELECT 1 FROM json_each(l.tags) WHERE value = ?)", string(tagJSON), lq.Tag)
 	}
 	if lq.Format != "" {
-		where = append(where, "l.format = ?")
-		args = append(args, lq.Format)
-	}
-	if lq.Status != "" {
-		where = append(where, "b.reading_status = ?")
-		args = append(args, lq.Status)
+		lib.add("l.format = ?", lq.Format)
 	}
 	if lq.WorkType != "" {
-		where = append(where, "l.work_type = ?")
-		args = append(args, lq.WorkType)
+		lib.add("l.work_type = ?", lq.WorkType)
 	}
-	cond := " WHERE " + strings.Join(where, " AND ")
+	unshelved := false
+	if lq.Shelf != nil {
+		switch shelf := NormalizeShelf(*lq.Shelf); {
+		case shelf == "":
+			unshelved = true
+			user.add("(b.group_name IS NULL OR b.group_name = '')")
+		case lq.Recursive:
+			// '0' follows '/' in byte order, so the range holds exactly the paths below shelf.
+			user.add("(b.group_name = ? OR (b.group_name >= ? AND b.group_name < ?))", shelf, shelf+"/", shelf+"0")
+		default:
+			user.add("b.group_name = ?", shelf)
+		}
+	}
+	if lq.Status != "" {
+		user.add("b.reading_status = ?", lq.Status)
+	}
 
-	var total int
-	if err := s.st.R.QueryRowContext(ctx, `SELECT COUNT(*)`+userJoin+cond, args...).Scan(&total); err != nil {
+	total, err := s.count(ctx, userID, &lib, &user, unshelved)
+	if err != nil {
 		return api.BookPage{}, err
 	}
-	order := map[string]string{
-		"added": "l.created_at", "updated": "l.updated_at", "title": "l.title COLLATE NOCASE",
-		"author": "l.authors COLLATE NOCASE", "lastRead": "COALESCE(b.updated_at, 0)",
-	}[lq.Sort]
-	if order == "" {
-		order = "l.created_at"
-	}
-	dir := " ASC"
+
+	dir, cmp := " ASC", ">"
 	if lq.Desc {
-		dir = " DESC"
+		dir, cmp = " DESC", "<"
 	}
-	rows, err := s.st.R.QueryContext(ctx, `SELECT `+libraryColumns+`, b.group_name, b.reading_status, b.progress, b.updated_at`+
-		userJoin+cond+` ORDER BY `+order+dir+`, l.hash LIMIT ? OFFSET ?`, append(args, lq.Limit, offset)...)
+	page := filter{args: []any{userID}}
+	page.add("b.deleted_at IS NULL")
+	page.where = append(page.where, lib.where...)
+	page.args = append(page.args, lib.args...)
+	page.where = append(page.where, user.where...)
+	page.args = append(page.args, user.args...)
+	if keyset {
+		var v any = cur.Str
+		if cur.Num != nil {
+			v = *cur.Num
+		}
+		// A row-value comparison is a single range on the (sort column, hash) index.
+		page.add(fmt.Sprintf("(%s, l.hash) %s (?, ?)", key.expr, cmp), v, cur.Hash)
+	}
+	query := `SELECT ` + libraryColumns + `, b.group_name, b.reading_status, b.progress, b.updated_at` + userJoin +
+		` WHERE ` + strings.Join(page.where, " AND ") + ` ORDER BY ` + key.expr + dir + `, l.hash` + dir + ` LIMIT ? OFFSET ?`
+	rows, err := s.st.R.QueryContext(ctx, query, append(page.args, lq.Limit+1, cur.Offset)...)
 	if err != nil {
 		return api.BookPage{}, err
 	}
 	defer rows.Close()
-	page := api.BookPage{Items: []api.Book{}, Total: total}
+	out := api.BookPage{Items: make([]api.Book, 0, lq.Limit), Total: total}
+	var last db.LibraryBook
+	more := false
 	for rows.Next() {
+		if len(out.Items) == lq.Limit {
+			more = true
+			break
+		}
 		lb, u, err := scanBook(rows)
 		if err != nil {
 			return api.BookPage{}, err
 		}
-		page.Items = append(page.Items, toAPI(&lb, &u))
+		out.Items = append(out.Items, toAPI(&lb, &u))
+		last = lb
 	}
 	if err := rows.Err(); err != nil {
 		return api.BookPage{}, err
 	}
-	if next := offset + len(page.Items); next < total && len(page.Items) == lq.Limit {
-		page.NextCursor = new(encodeCursor(next))
+	if more {
+		next := cursor{Offset: cur.Offset + lq.Limit}
+		if key.value != nil {
+			next = cursor{Sort: lq.Sort, Desc: lq.Desc, Hash: last.Hash}
+			switch v := key.value(&last).(type) {
+			case int64:
+				next.Num = &v
+			case string:
+				next.Str = v
+			}
+		}
+		out.NextCursor = new(next.encode())
 	}
-	return page, nil
+	return out, nil
+}
+
+// count counts the books a listing matches without joining every library book with the user's rows where
+// it can: library filters alone count library rows minus the user's hidden ones; a shelf or status filter
+// starts from the user's rows. Only "unshelved" needs the full join (a book without a row is unshelved).
+func (s *Service) count(ctx context.Context, userID string, lib, user *filter, unshelved bool) (int, error) {
+	var n int
+	switch {
+	case unshelved:
+		args := append(append([]any{userID}, lib.args...), user.args...)
+		err := s.st.R.QueryRowContext(ctx, `SELECT COUNT(*)`+userJoin+` WHERE b.deleted_at IS NULL`+lib.and()+user.and(), args...).Scan(&n)
+		return n, err
+	case len(user.where) > 0:
+		args := append(append([]any{userID}, user.args...), lib.args...)
+		err := s.st.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM books b JOIN library_books l ON l.hash = b.book_hash
+			WHERE b.user_id = ? AND b.deleted_at IS NULL`+user.and()+lib.and(), args...).Scan(&n)
+		return n, err
+	}
+	var all, hidden int
+	where := ""
+	if len(lib.where) > 0 {
+		where = " WHERE " + strings.Join(lib.where, " AND ")
+	}
+	if err := s.st.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM library_books l`+where, lib.args...).Scan(&all); err != nil {
+		return 0, err
+	}
+	err := s.st.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM books b JOIN library_books l ON l.hash = b.book_hash
+		WHERE b.user_id = ? AND b.deleted_at IS NOT NULL`+lib.and(), append([]any{userID}, lib.args...)...).Scan(&hidden)
+	return all - hidden, err
 }
 
 func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
-}
-
-func encodeCursor(offset int) string {
-	return base64.RawURLEncoding.EncodeToString([]byte("o:" + strconv.Itoa(offset)))
-}
-
-func decodeCursor(c string) (int, error) {
-	if c == "" {
-		return 0, nil
-	}
-	b, err := base64.RawURLEncoding.DecodeString(c)
-	if err == nil && strings.HasPrefix(string(b), "o:") {
-		if n, err := strconv.Atoi(string(b[2:])); err == nil && n >= 0 {
-			return n, nil
-		}
-	}
-	return 0, apperr.BadRequest("invalid cursor")
 }
 
 func toAPI(lb *db.LibraryBook, u *userState) api.Book {
@@ -246,6 +353,9 @@ func (s *Service) SetState(ctx context.Context, userID, hash string, shelf *stri
 	lb, err := s.row(ctx, hash)
 	if err != nil {
 		return api.Book{}, err
+	}
+	if !ReadestCanOpen(lb.Format) {
+		return api.Book{}, apperr.Conflict(lb.Format + " books have no shelf or reading status: Readest cannot open them")
 	}
 	now := time.Now().UnixMilli()
 	err = s.st.Tx(ctx, func(q *db.Queries) error {

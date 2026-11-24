@@ -72,7 +72,7 @@ type comicInfo struct {
 func (ci *comicInfo) metadata() Metadata {
 	m := Metadata{
 		Title: strings.TrimSpace(ci.Title), Series: strings.TrimSpace(ci.Series),
-		Description: stripHTML(ci.Summary), Publisher: strings.TrimSpace(ci.Publisher),
+		Description: StripHTML(ci.Summary), Publisher: strings.TrimSpace(ci.Publisher),
 		Language: strings.TrimSpace(ci.LanguageISO), ISBN: ci.GTIN,
 	}
 	if m.Title == "" && m.Series != "" {
@@ -143,7 +143,7 @@ func parseCBZ(filePath string) (Metadata, error) {
 		}
 		if pages[0].UncompressedSize64 <= maxCoverBytes {
 			if b, err := readZipFile(pages[0]); err == nil {
-				m.Cover, m.CoverExt = b, sniffImage(b)
+				m.Cover, m.CoverExt = b, SniffImage(b)
 			}
 		}
 	}
@@ -180,7 +180,7 @@ func parseCBR(filePath string) (Metadata, error) {
 			return nil
 		}
 		if b, err := io.ReadAll(io.LimitReader(r, maxCoverBytes)); err == nil {
-			m.Cover, m.CoverExt = b, sniffImage(b)
+			m.Cover, m.CoverExt = b, SniffImage(b)
 		}
 		return errDone
 	})

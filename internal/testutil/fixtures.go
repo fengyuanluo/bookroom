@@ -16,9 +16,9 @@ import (
 // EPUB describes a generated EPUB.
 type EPUB struct {
 	Title, Author, ISBN, Series, SeriesIndex, Language, Description string
-	Subjects                                                       []string
-	Cover                                                          bool
-	Salt                                                           string // changes the bytes (and hash) without changing metadata
+	Subjects                                                        []string
+	Cover                                                           bool
+	Salt                                                            string // changes the bytes (and hash) without changing metadata
 }
 
 // PNG returns a tiny valid PNG.

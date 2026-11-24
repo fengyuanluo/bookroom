@@ -54,7 +54,19 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = s.Close()
 		return nil, err
 	}
+	// 0x10002: analyze tables that never had statistics, so the planner picks the partial and covering
+	// indexes from the first query on.
+	if _, err := w.ExecContext(ctx, "PRAGMA optimize=0x10002"); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("store: optimize: %w", err)
+	}
 	return s, nil
+}
+
+// Optimize refreshes planner statistics that went stale (run periodically and after bulk imports).
+func (s *Store) Optimize(ctx context.Context) error {
+	_, err := s.W.ExecContext(ctx, "PRAGMA optimize")
+	return err
 }
 
 func (s *Store) migrate(ctx context.Context) error {

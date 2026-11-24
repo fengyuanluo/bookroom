@@ -3,25 +3,34 @@ module bookroom
 go 1.26.10
 
 require (
+	code.dny.dev/ssrf v0.3.0
+	github.com/PuerkitoBio/goquery v1.14.0
 	github.com/alexedwards/argon2id v1.0.0
 	github.com/caarlos0/env/v11 v11.4.2
 	github.com/getkin/kin-openapi v0.153.0
+	github.com/gin-contrib/cors v1.7.11
+	github.com/gin-contrib/requestid v1.0.10
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/nwaples/rardecode/v2 v2.4.6
+	github.com/oapi-codegen/gin-middleware v1.2.1
 	github.com/oapi-codegen/runtime v1.9.1
 	github.com/pdfcpu/pdfcpu v0.16.4
 	github.com/pressly/goose/v3 v3.30.1
+	github.com/samber/slog-gin v1.21.1
 	github.com/stretchr/testify v1.12.1
+	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.63.0
 )
 
 require (
+	github.com/andybalholm/cascadia v1.3.5 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
 	github.com/bytedance/sonic v1.15.2 // indirect
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/cloudwego/base64x v0.1.7 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
@@ -33,6 +42,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.3 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
+	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/hhrutter/tiff v1.0.7 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
@@ -57,6 +67,8 @@ require (
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.8.0 // indirect
+	go.opentelemetry.io/otel v1.47.0 // indirect
+	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	go.yaml.in/yaml/v4 v4.0.0 // indirect

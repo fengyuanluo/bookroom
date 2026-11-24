@@ -2,9 +2,9 @@ package library
 
 import (
 	"archive/zip"
-	"html"
 	"encoding/xml"
 	"errors"
+	"html"
 	"io"
 	"path"
 	"strconv"
@@ -86,7 +86,7 @@ func parseEPUB(filePath string) (Metadata, error) {
 	if href := coverHref(&pkg); href != "" {
 		if f := files[path.Join(path.Dir(opfPath), href)]; f != nil && f.UncompressedSize64 <= maxCoverBytes {
 			if b, err := readZipFile(f); err == nil {
-				if ext := sniffImage(b); ext != "" {
+				if ext := SniffImage(b); ext != "" {
 					m.Cover, m.CoverExt = b, ext
 				}
 			}
@@ -160,7 +160,7 @@ func opfMetadata(pkg *opfPackage) Metadata {
 	if strings.Contains(desc, "&lt;") {
 		desc = html.UnescapeString(desc)
 	}
-	m.Description = stripHTML(desc)
+	m.Description = StripHTML(desc)
 	m.Tags = md.Subjects
 	for _, id := range md.Identifiers {
 		v := strings.TrimSpace(id.Value)

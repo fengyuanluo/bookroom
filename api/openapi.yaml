@@ -73,6 +73,19 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Health'}
 
+  /openapi.json:
+    get:
+      tags: [system]
+      operationId: getOpenAPI
+      summary: This document as JSON
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI document the server was generated from.
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+
   # ───────────────────────── native auth ─────────────────────────
   /api/v1/auth/login:
     post:
@@ -334,7 +347,7 @@ paths:
                   description: The book file; its name (extension) decides the format.
                 shelf:
                   type: string
-                  description: Optional shelf for the uploading user.
+                  description: Optional shelf for the uploading user (ignored for CBR, which has no per-user state).
       responses:
         '200':
           description: The file was already in the library.
@@ -442,7 +455,9 @@ paths:
       tags: [books]
       operationId: updateBookState
       summary: Set the current user's shelf or reading status of a book
-      description: Written into the user's Readest book row with fresh field clocks, so every Readest device picks it up on the next sync.
+      description: |
+        Written into the user's Readest book row with fresh field clocks, so every Readest device picks it up on the
+        next sync. CBR books answer 409: Readest cannot open them, so they have no per-user state.
       requestBody:
         required: true
         content:
@@ -457,6 +472,7 @@ paths:
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
   /api/v1/books/{hash}/metadata/locks:
     parameters:
       - $ref: '#/components/parameters/BookHash'
@@ -1759,11 +1775,18 @@ components:
       minProperties: 1
       description: Absent fields stay; `null` or empty clears.
       properties:
-        shelf: {type: string, nullable: true}
+        shelf:
+          type: string
+          nullable: true
+          description: Shelf path; `null` or `""` removes the book from its shelf.
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
         readingStatus:
           type: string
           nullable: true
-          enum: [unread, reading, finished, abandoned]
+          description: One of `unread`, `reading`, `finished`, `abandoned`; `null` clears it.
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
     MetadataLocks:
       type: object
       required: [fields]
