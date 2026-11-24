@@ -28,7 +28,7 @@ Readest 兼容端点保持 Readest 自己的线格式（snake_case、ISO 时间�
 
 ```json
 {
-  "type": "https://bookroom.dev/problems/not-found",
+  "type": "/problems/not-found",
   "title": "Not Found",
   "status": 404,
   "detail": "no such book",
@@ -36,7 +36,7 @@ Readest 兼容端点保持 Readest 自己的线格式（snake_case、ISO 时间�
 }
 ```
 
-`type` 的末段是稳定代码：`bad-request`、`invalid-request`（规格校验失败）、`unauthorized`、`forbidden`、`not-found`、`conflict`、`too-large`、`unsupported-format`、`upstream`（元数据源失败）、`unavailable`、`internal`。
+`type` 是相对 URI `/problems/<代码>`，只用于比较、不可访问；代码是稳定的：`bad-request`、`invalid-request`（规格校验失败）、`unauthorized`、`forbidden`、`not-found`、`conflict`、`too-large`、`unsupported-format`、`upstream`（元数据源失败）、`unavailable`、`internal`。
 
 ## 鉴权
 

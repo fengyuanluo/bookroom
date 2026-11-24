@@ -59,7 +59,7 @@ func TestAuthFlow(t *testing.T) {
 	e.expect(e.call("POST", "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "nope"}), 401, nil)
 	var problem struct{ Type, Detail string }
 	e.expect(e.call("GET", "/api/v1/me", "", nil), 401, &problem)
-	assert.Equal(t, "https://bookroom.dev/problems/unauthorized", problem.Type)
+	assert.Equal(t, "/problems/unauthorized", problem.Type)
 
 	_, alice := e.user("alice")
 	e.expect(e.call("GET", "/api/v1/users", alice, nil), 403, nil)
@@ -633,7 +633,7 @@ func TestValidationAndSpec(t *testing.T) {
 		Status       int
 	}
 	e.expect(e.call("GET", "/api/v1/books?limit=999", e.admin, nil), 400, &problem)
-	assert.Equal(t, "https://bookroom.dev/problems/invalid-request", problem.Type)
+	assert.Equal(t, "/problems/invalid-request", problem.Type)
 	assert.True(t, strings.Contains(problem.Detail, "limit"), problem.Detail)
 	e.expect(e.call("GET", "/api/v1/books/not-a-hash", e.admin, nil), 400, nil)
 	var spec map[string]any

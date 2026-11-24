@@ -57,8 +57,8 @@ docker run -d --name bookroom -p 8080:8080 -v /srv/bookroom:/data \
 | `OPENLIBRARY_CONTACT` | 空 | 联系邮箱；填写后放进 User-Agent，限速从 1 次/秒提高到 3 次/秒 |
 | `DOUBAN_ENABLED` | `false` | 豆瓣（抓取网页，违反其条款，风险自负） |
 | `XIAOSHUOHUB_ENABLED` | `true` | 小说汇开关 |
-| `XIAOSHUOHUB_URL` | `https://api.xiaoshuohub.com` | 小说汇开发者 API 地址 |
-| `XIAOSHUOHUB_APP_KEY` / `XIAOSHUOHUB_APP_SECRET` | 空 | 应用凭据；不填则匿名调用（200 次/天/IP），填写后 1000 次/滚动 24 小时 |
+| `XIAOSHUOHUB_URL` | `https://api.xiaoshuohub.com` | 小说汇开发者 API 地址（[开发者文档](https://www.xiaoshuohub.com/developers/)） |
+| `XIAOSHUOHUB_APP_KEY` / `XIAOSHUOHUB_APP_SECRET` | 空 | 应用凭据（在 `https://api.xiaoshuohub.com/apps/developer/` 创建）；不填则匿名调用（200 次/天/IP），填写后 1000 次/滚动 24 小时 |
 
 ## 数据目录
 

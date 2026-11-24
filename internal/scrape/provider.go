@@ -87,7 +87,7 @@ type client struct {
 
 func newClient(id string, perSecond float64, ua string) *client {
 	if ua == "" {
-		ua = "BookRoom/0.1 (+https://github.com/bookroom)"
+		ua = "BookRoom (self-hosted library server)"
 	}
 	return &client{id: id, http: &http.Client{Timeout: 20 * time.Second}, limiter: rate.NewLimiter(rate.Limit(perSecond), 1), ua: ua}
 }

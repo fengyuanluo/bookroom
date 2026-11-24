@@ -1573,7 +1573,7 @@ components:
       description: RFC 9457 problem details.
       required: [type, title, status]
       properties:
-        type: {type: string, description: 'Stable URI, e.g. `https://bookroom.dev/problems/not-found`.'}
+        type: {type: string, description: 'Stable URI reference `/problems/<code>`, e.g. `/problems/not-found`; compare it, do not fetch it.'}
         title: {type: string}
         status: {type: integer}
         detail: {type: string}

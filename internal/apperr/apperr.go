@@ -12,7 +12,7 @@ import (
 // Error is an expected failure with an HTTP status.
 type Error struct {
 	Status int    // HTTP status
-	Code   string // stable slug, e.g. "not-found"; the problem type is https://bookroom.dev/problems/<Code>
+	Code   string // stable slug, e.g. "not-found"; the problem type is /problems/<Code>
 	Detail string // human-readable explanation
 	Body   any    // when set, rendered verbatim as the JSON body
 	Header http.Header

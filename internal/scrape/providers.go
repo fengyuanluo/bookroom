@@ -125,7 +125,7 @@ type OpenLibrary struct {
 func NewOpenLibrary(enabled bool, contact string) *OpenLibrary {
 	ua, perSecond := "", 1.0
 	if contact != "" {
-		ua, perSecond = "BookRoom/0.1 ("+contact+")", 3
+		ua, perSecond = "BookRoom ("+contact+")", 3
 	}
 	return &OpenLibrary{On: enabled, Base: "https://openlibrary.org", Covers: "https://covers.openlibrary.org", c: newClient("openlibrary", perSecond, ua)}
 }

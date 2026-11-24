@@ -111,7 +111,7 @@ func (s *Server) renderError(c *gin.Context, err error) {
 	default:
 		c.Header("Content-Type", "application/problem+json")
 		c.JSON(ae.Status, api.Problem{
-			Type: "https://bookroom.dev/problems/" + ae.Code, Title: http.StatusText(ae.Status), Status: ae.Status,
+			Type: "/problems/" + ae.Code, Title: http.StatusText(ae.Status), Status: ae.Status,
 			Detail: &ae.Detail, Instance: new(c.Request.URL.Path),
 		})
 	}

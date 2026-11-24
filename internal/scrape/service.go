@@ -192,7 +192,7 @@ func (s *Service) fetchCover(ctx context.Context, u string) ([]byte, string) {
 	if err != nil {
 		return nil, ""
 	}
-	req.Header.Set("User-Agent", "BookRoom/0.1")
+	req.Header.Set("User-Agent", "BookRoom")
 	resp, err := s.http.Do(req)
 	if err != nil {
 		return nil, ""

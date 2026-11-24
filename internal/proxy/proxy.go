@@ -165,7 +165,7 @@ func failFor(err error) *apperr.Error {
 
 // ── OPDS ──
 
-const opdsUserAgent = "BookRoom/0.1 (OPDS proxy; Readest compatible)"
+const opdsUserAgent = "BookRoom (OPDS proxy; Readest compatible)"
 
 // OPDSRequest is the query of /api/opds/proxy.
 type OPDSRequest struct {
