@@ -38,7 +38,7 @@ docker run -d --name bookroom -p 8080:8080 -v /srv/bookroom:/data \
 | `ADDR` | `:8080` | 监听地址 |
 | `DATA_DIR` | `./data` | 数据目录，自动创建 |
 | `PUBLIC_URL` | 空 | 外部访问地址，用于签名下载链接和 OPDS 绝对链接；为空时取请求的 Host 及 `X-Forwarded-Proto/Host` |
-| `WEB_DIR` | 空 | BookRoom Reader（Readest 分叉）Web 静态导出目录（`pnpm build-web` 产出的 `out/`）；设置后在 `/` 提供，无扩展名的未知路径回退到 `index.html`，带扩展名的缺失文件返回 404 |
+| `WEB_DIR` | 空 | BookRoom Reader（Readest 分叉）Web 静态导出目录（`pnpm build-web` 产出的 `out/`）；设置后在 `/` 提供，无扩展名的未知路径回退到 `index.html`，带扩展名的缺失文件返回 404。所有文件带 `Cross-Origin-Opener-Policy: same-origin` 与 `Cross-Origin-Embedder-Policy: require-corp`（书内与书库搜索依赖 SharedArrayBuffer），反向代理不能去掉这两个头 |
 | `JWT_SECRET` | 自动生成 | ≥32 字符；为空时生成并保存到 `DATA_DIR/jwt.key`。更换会让所有访问令牌和签名链接失效 |
 | `ACCESS_TTL` | `1h` | 访问令牌有效期 |
 | `REFRESH_TTL` | `720h` | 刷新令牌有效期 |

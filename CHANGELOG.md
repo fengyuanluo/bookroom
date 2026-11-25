@@ -7,7 +7,7 @@
 - OpenAPI 3 契约（76 个操作）生成 Gin strict server；`/openapi.json` 自描述；RFC 9457 错误。
 - 书库：partialMD5 内容寻址，EPUB/PDF/CBZ/CBR/TXT 等入库，内嵌元数据解析，封面，键集分页列表、书单、标签、阅读状态；多用户共享书库，书投影进每个用户的 Readest 书记录。
 - Readest 云契约：`/api/sync`（移植 v0.12.20 合并规则）、`/api/sync/replicas`、`/api/sync/replica-keys`、`/api/sync/vocabulary`（生词本）、`/api/storage/*`；GoTrue 子集供 `readest.koplugin` 登录。
-- 托管 BookRoom Reader Web 静态导出（`WEB_DIR`）：路由按 `<route>.html` 提供，无扩展名路径回退 `index.html`，缺失资源返回 404。
+- 托管 BookRoom Reader Web 静态导出（`WEB_DIR`）：路由按 `<route>.html` 提供，无扩展名路径回退 `index.html`，缺失资源返回 404；跨源隔离（COOP/COEP），搜索才能运行。
 - KOSync 协议，设备密钥登录，EPUB 位置与 Readest 互通。
 - OPDS 1.2 目录。
 - 阅读统计聚合：汇总、按天、按书、连续天数。

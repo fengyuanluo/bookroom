@@ -339,6 +339,10 @@ func (s *Server) baseURL(ctx context.Context) string {
 // serveWeb serves a static Readest web build. A Next.js export writes each route as `<route>.html`
 // (or `<route>/index.html`); other extensionless paths fall back to the root index.html, while a
 // missing file with an extension (an image, a script) is a 404 rather than the app shell.
+//
+// Every file of the build is cross-origin isolated: Readest's in-book and library search runs on a
+// Turso WASM thread pool that needs SharedArrayBuffer, which the browser only grants when the page
+// and its workers carry COOP same-origin and COEP require-corp. Without them search returns nothing.
 func (s *Server) serveWeb(r *gin.Engine) {
 	root := s.Cfg.WebDir
 	r.NoRoute(func(c *gin.Context) {
@@ -354,6 +358,8 @@ func (s *Server) serveWeb(r *gin.Engine) {
 			}
 		}
 		clean := filepath.Join(root, filepath.FromSlash(filepath.Clean("/"+p)))
+		c.Header("Cross-Origin-Opener-Policy", "same-origin")
+		c.Header("Cross-Origin-Embedder-Policy", "require-corp")
 		for _, candidate := range []string{clean, clean + ".html", filepath.Join(clean, "index.html")} {
 			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
 				c.File(candidate)

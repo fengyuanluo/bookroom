@@ -179,6 +179,10 @@ func TestStaticWebBuild(t *testing.T) {
 		resp, err := http.Get(srv + path)
 		require.NoError(t, err)
 		defer resp.Body.Close()
+		if resp.StatusCode == 200 {
+			assert.Equal(t, "same-origin", resp.Header.Get("Cross-Origin-Opener-Policy"), path)
+			assert.Equal(t, "require-corp", resp.Header.Get("Cross-Origin-Embedder-Policy"), path)
+		}
 		b := make([]byte, 64)
 		n, _ := resp.Body.Read(b)
 		return resp.StatusCode, string(b[:n])
