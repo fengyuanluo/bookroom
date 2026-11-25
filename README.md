@@ -1,6 +1,6 @@
 # BookRoom
 
-自托管书库服务端：书放在服务器上，任何设备登录即可看到书单、打开即读、进度和阅读时长跨设备同步。客户端是 [Readest](https://github.com/readest/readest) 的硬分叉；KOReader、CrossPoint 等阅读器通过 KOSync 和 OPDS 接入。
+自托管书库服务端：书放在服务器上，任何设备登录即可看到书单、打开即读、进度和阅读时长跨设备同步。客户端 [BookRoom Reader](https://github.com/fengyuanluo/bookroom-client) 是 [Readest](https://github.com/readest/readest) 的硬分叉（桌面、Android 安装包在其 Releases）；KOReader、CrossPoint 等阅读器通过 KOSync 和 OPDS 接入。
 
 单个 Go 二进制（Gin + SQLite，无 cgo），一个数据目录，零外部服务。
 
@@ -41,6 +41,8 @@ curl -s 'localhost:8080/api/v1/books?q=三体' -H "Authorization: Bearer $TOKEN"
 ```
 
 KOReader：在 BookRoom 里 `POST /api/v1/devices` 生成设备密钥，KOSync 服务器填 `http://主机:8080/kosync`，密码填密钥；OPDS 目录填 `http://主机:8080/opds`。
+
+浏览器访问：把 BookRoom Reader 的 Web 静态导出（`pnpm build-web` 产出的 `out/`）放到 `BOOKROOM_WEB_DIR`，打开 `http://主机:8080/` 即为登录页。
 
 ## 文档
 
