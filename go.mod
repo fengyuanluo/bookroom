@@ -2,6 +2,8 @@ module bookroom
 
 go 1.26.10
 
+toolchain go1.27.3
+
 require (
 	code.dny.dev/ssrf v0.3.0
 	github.com/PuerkitoBio/goquery v1.14.0
